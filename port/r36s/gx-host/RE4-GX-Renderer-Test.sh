@@ -12,6 +12,7 @@ date
 uname -a
 printf 'TEST_BINARY=%s\n' "$GAME"
 free -m
+if [ -f "$GAME" ]; then chmod +x "$GAME" 2>/dev/null || :; fi
 if [ ! -x "$GAME" ]; then
   printf '%s\n' 'ERROR=TEST_BINARY_MISSING'
   exit 127
