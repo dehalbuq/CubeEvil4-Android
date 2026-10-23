@@ -543,6 +543,10 @@ struct GxRenderer::Impl {
   };
   TimerPool chunkTimer, presentTimer;
   bool timerOn = false;
+  // Optional experiment: the diagnostic GPU timestamp queries and the
+  // per-chunk "how far behind" fences are not required to draw any frame.
+  // This flag MUST NOT disable streamFence[] (protects uniform ring reuse).
+  bool gpuDiagnosticsOn = true;
 
   // --- how far the GPU is behind (fences, GxStats::behind*) ------------------------
   // The timer of a chunk can read far more than a picture's interval while the pictures keep
@@ -2516,7 +2520,12 @@ bool GxRenderer::Init(int scale, std::string *error) {
   for (auto &b : m.bound)
     b.id = m.whiteTex;
   m.StreamInit();
-  m.TimerInit();
+  const char* gpuProbes = std::getenv("RE4_GX_GPU_PROBES");
+  m.gpuDiagnosticsOn = !(gpuProbes && *gpuProbes == '0');
+  GXLOG("GX optional GPU diagnostic probes: %s (uniform stream reuse fences remain ON)",
+      m.gpuDiagnosticsOn ? "ON" : "OFF");
+  if (m.gpuDiagnosticsOn)
+    m.TimerInit();
   if (!m.MakeUtilityPrograms(error))
     return false;
   // d2: does this device keep the EFB over a pass's end, drawn back? Else own buffers
@@ -2661,7 +2670,8 @@ void GxRenderer::Run(const Re4GxChunk &chunk) {
   const auto deepCleanupStart = DeepClock::now();
 #endif
   m.TimerEnd();
-  m.FenceAfterChunk();
+  if (m.gpuDiagnosticsOn)
+    m.FenceAfterChunk();
   // leave GL as the app's other renderers expect it
   glBindVertexArray(0);
   for (GLuint unit = 0; unit < 8; unit++)
