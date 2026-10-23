@@ -1,0 +1,48 @@
+name: R36S - test optional GPU probe removal
+
+on:
+  push:
+    branches:
+      - chatgpt/r36s-optional-gpu-probes
+    paths:
+      - "port/r36s/gx-host/**"
+      - "port/android-decomp/app/src/main/cpp/gx_gl.cpp"
+      - ".github/workflows/r36s-optional-gpu-probes.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  profile-no-probes-arm64:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install SDL2 and GLES dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y cmake ninja-build g++ pkg-config libsdl2-dev libgles-dev
+      - name: Build independent optimized ARM64 GX profiler
+        run: |
+          set -eux
+          cmake -S port/r36s/gx-host -B port/build/r36s-gx-host -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake --build port/build/r36s-gx-host --target r36s_game_deep_profile --parallel 2
+          file port/build/r36s-gx-host/r36s_game_deep_profile
+          readelf -h port/build/r36s-gx-host/r36s_game_deep_profile | grep -E "Class:|Machine:"
+          test -s port/build/r36s-gx-host/r36s_game_deep_profile
+      - name: Package opt-in addon preserving stable game build
+        run: |
+          set -euo pipefail
+          mkdir -p dist/cubeevil4_live_gx
+          cp port/build/r36s-gx-host/r36s_game_deep_profile dist/cubeevil4_live_gx/
+          cp port/r36s/gx-host/RE4-R36S-Perfil-GX-Profundo.sh dist/
+          cp port/r36s/gx-host/RE4-R36S-Sem-Probes.sh dist/
+          cp port/r36s/gx-host/README-NO-GPU-PROBES.md dist/LEIA-ME-SEM-PROBES.md
+          chmod +x dist/cubeevil4_live_gx/r36s_game_deep_profile dist/*.sh
+      - name: Upload ARM64 probe optimization experiment
+        uses: actions/upload-artifact@v4
+        with:
+          name: CubeEvil4-R36S-Sem-GPU-Probes-ARM64
+          path: dist/
+          retention-days: 14
