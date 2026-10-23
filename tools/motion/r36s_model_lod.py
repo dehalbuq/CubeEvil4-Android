@@ -170,10 +170,8 @@ def build_candidate(mesh, cell_fraction, allow_alpha=False):
 
 
 def _triangles(primitive):
-    # Reuse meshbin's GX winding decoder, preserving UVs and colour references.
-    class AsPart:
-        prims = [primitive]
-    return AsPart().triangles() if hasattr(AsPart(), "triangles") else _triangles_manual(primitive)
+    # Match the existing meshbin.Part.triangles() decode, without a temporary Part.
+    return _triangles_manual(primitive)
 
 
 def _triangles_manual(p):
