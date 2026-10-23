@@ -257,6 +257,9 @@ int main(int argc,char**argv) {
       fprintf(stderr,"GX_INIT_ERROR=%s\n",error.c_str());
       result=8;
     } else {
+      printf("GX_BASEVERTEX_REQUESTED=%s GX_BASEVERTEX_ACTIVE=%d\n",
+          getenv("RE4_GX_BASEVERTEX")?getenv("RE4_GX_BASEVERTEX"):"(automatic)",
+          renderer.BaseVertex()?1:0);
       const auto deadline=Clock::now()+std::chrono::seconds(sec);
       uint32_t last=0;
       auto nextTick=Clock::now();
@@ -268,6 +271,7 @@ int main(int argc,char**argv) {
       bool userQuit=false;
 #if defined(RE4_R36S_PROFILE)
       StageMeter gxRunMeter,presentMeter,finishMeter,swapMeter;
+      unsigned previousAttributeSetups=0, previousDrawCalls=0;
       puts("PROFILER_ENABLED=1 STAGE_TIMING=CPU_WALL_CLOCK_MS_INCLUDING_DRIVER_WAIT");
       puts("PROFILER_NOTE=GL_FINISH_TIME_INCLUDES_GPU_WAIT_NOT_PURE_CPU");
 #endif
@@ -408,6 +412,13 @@ int main(int argc,char**argv) {
             presentMeter.average(),presentMeter.maxMs,presentMeter.totalMs,
             finishMeter.average(),finishMeter.maxMs,finishMeter.totalMs,
             swapMeter.average(),swapMeter.maxMs,swapMeter.totalMs);
+          const unsigned attributeSetups=stat.attributeSetups-previousAttributeSetups;
+          const unsigned drawCalls=stat.draws-previousDrawCalls;
+          printf("DRIVER_WORK_WINDOW DRAWS=%u ATTRIB_SETUPS=%u ATTRIBUTE_SETUPS_PER_DRAW=%.3f UNIFORM_UPLOADS_TOTAL=%u PROGRAM_SWITCHES_TOTAL=%u TEXTURE_BINDS_TOTAL=%u STATE_CHANGES_TOTAL=%u\n",
+              drawCalls,attributeSetups,drawCalls?static_cast<double>(attributeSetups)/drawCalls:0.0,
+              stat.uniformUploads,stat.programSwitches,stat.textureBinds,stat.stateChanges);
+          previousAttributeSetups=stat.attributeSetups;
+          previousDrawCalls=stat.draws;
           gxRunMeter.clear();presentMeter.clear();finishMeter.clear();swapMeter.clear();
 #endif
           memory("FRONTEND");
