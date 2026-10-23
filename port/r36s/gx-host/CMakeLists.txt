@@ -17,3 +17,16 @@ add_executable(r36s_gx_host
 target_include_directories(r36s_gx_host PRIVATE "${RE4_ANDROID_CPP}" "${RE4_WHOLE_RUNTIME}")
 target_compile_options(r36s_gx_host PRIVATE -O2 -Wall -Wextra -ffp-contract=off)
 target_link_libraries(r36s_gx_host PRIVATE PkgConfig::SDL2 "${GLESV2_LIB}" dl)
+
+# Real-time test: GX commands from a separate Linux ARM64 core process.
+add_executable(r36s_live_ipc
+  r36s_live_ipc.cpp
+  "${RE4_ANDROID_CPP}/gx_gl.cpp"
+  "${RE4_ANDROID_CPP}/gx_gl_shader.cpp"
+  "${RE4_ANDROID_CPP}/gx_texture.cpp"
+  "${RE4_WHOLE_RUNTIME}/core_ipc.cpp"
+  "${RE4_WHOLE_RUNTIME}/core_ipc_client.cpp"
+)
+target_include_directories(r36s_live_ipc PRIVATE "${RE4_ANDROID_CPP}" "${RE4_WHOLE_RUNTIME}")
+target_compile_options(r36s_live_ipc PRIVATE -O2 -Wall -Wextra -ffp-contract=off)
+target_link_libraries(r36s_live_ipc PRIVATE PkgConfig::SDL2 "${GLESV2_LIB}" dl pthread)

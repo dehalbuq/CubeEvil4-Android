@@ -528,11 +528,11 @@ if(NOT ANDROID)
     add_dependencies(re4_host re4_detmath)
     target_link_options(re4_host PRIVATE -fuse-ld=lld)
     target_link_libraries(re4_host PRIVATE ${CMAKE_DL_LIBS} pthread)
-    # the core in a process of its own (port/docs/32bit-kernprozess.md), 32 bit as on
-    # Android: re4_coreproc (host/coreproc.cpp, on Android libre4_coreproc.so) and the
-    # app's side against it (re4_core_remote_test, the client of core_mode.cpp)
-    if(CMAKE_SIZEOF_VOID_P EQUAL 4)
-        add_executable(re4_coreproc host/coreproc.cpp runtime/core_ipc.cpp)
+    # Linux shared-memory core process on 32-bit and AArch64.
+    # On AArch64 the coreproc must reserve high memory (like host/loader.c)
+    # before loading game libraries so game-visible pointers fit under 4GB.
+    if(CMAKE_SIZEOF_VOID_P EQUAL 4 OR RE4_ARCH STREQUAL "arm64")
+        add_executable(re4_coreproc host/coreproc.cpp host/high_memory_coreproc.c runtime/core_ipc.cpp)
         add_dependencies(re4_coreproc re4_main re4_hostlib)
         add_executable(re4_core_remote_test tests/core_remote_test.cpp runtime/core_ipc.cpp
             runtime/core_ipc_client.cpp)
