@@ -1,0 +1,41 @@
+name: R36S - offline GameCube static model LOD tests
+
+on:
+  push:
+    branches:
+      - chatgpt/r36s-offline-static-model-lod
+    paths:
+      - "tools/motion/meshbin.py"
+      - "tools/motion/r36s_model_lod.py"
+      - "tests/test_r36s_model_lod.py"
+      - ".github/workflows/r36s-static-model-lod.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-lod-tool:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Python offline model converter + tests
+        run: |
+          set -eux
+          python3 -m py_compile tools/motion/meshbin.py tools/motion/r36s_model_lod.py tests/test_r36s_model_lod.py
+          python3 tests/test_r36s_model_lod.py -v
+          python3 tools/motion/r36s_model_lod.py --help
+      - name: Package tool (no proprietary assets)
+        run: |
+          set -euo pipefail
+          mkdir -p dist/r36s-lod/tools
+          cp tools/motion/meshbin.py dist/r36s-lod/tools/
+          cp tools/motion/r36s_model_lod.py dist/r36s-lod/tools/
+          cp port/r36s/gx-host/README-R36S-MODEL-LOD.md dist/r36s-lod/LEIA-ME-R36S-LOD.md
+          test "$(find dist -type f | wc -l)" -eq 3
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CubeEvil4-R36S-LOD-Offline-Ferramenta
+          path: dist/
+          retention-days: 14
