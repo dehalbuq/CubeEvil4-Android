@@ -326,9 +326,9 @@ int main(int argc,char**argv) {
         result=11;
       }
       if(!result) puts("RESULT=GAME_BOOT_RENDERED_FRAMES_PLAYABILITY_UNVERIFIED");
+      else puts("RESULT=GAME_BOOT_NEEDS_INVESTIGATION");
       printf("GPU_TEST_MODE=%d FRAMES=%u PRESENTED_CALLS=%u SWAP_CALLED=%s\n",
               swapMode,processed,presented,swapMode==4?"NO":"YES");
-      else puts("RESULT=GAME_BOOT_NEEDS_INVESTIGATION");
       memory("END");
       r36s_crash::mark("renderer_release",processed,last);
       renderer.Release();
