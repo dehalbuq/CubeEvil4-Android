@@ -1,0 +1,53 @@
+name: R36S - 75pct GX CPU state de-dup vs baseline
+on:
+  push:
+    branches:
+      - chatgpt/r36s-75pct-state-dedup
+    paths:
+      - "port/r36s/gx-host/**"
+      - "port/android-decomp/app/src/main/cpp/gx_gl.cpp"
+      - "port/android-decomp/app/src/main/cpp/gx_gl.h"
+      - ".github/workflows/r36s-75-state-dedup.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  a35-state-dedup:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install native ARM64 GLES/SDL2 build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y cmake ninja-build g++ binutils pkg-config libsdl2-dev libgles-dev
+      - name: Compile controlled Cortex-A35 480x396 A/B pair
+        run: |
+          set -eux
+          cmake -S port/r36s/gx-host -B port/build/r36s-gx-host -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build port/build/r36s-gx-host --target r36s_game_a35_scalable r36s_game_a35_faststate --parallel 2
+          for bin in r36s_game_a35_scalable r36s_game_a35_faststate;do
+            file "port/build/r36s-gx-host/$bin"
+            readelf -h "port/build/r36s-gx-host/$bin" | grep -E 'Class:|Machine:'
+            test -s "port/build/r36s-gx-host/$bin"
+          done
+      - name: Package separate baseline and optimized executables only
+        run: |
+          set -euo pipefail
+          mkdir -p dist/cubeevil4_live_gx
+          cp port/build/r36s-gx-host/r36s_game_a35_scalable dist/cubeevil4_live_gx/r36s_game_a35_baseline
+          cp port/build/r36s-gx-host/r36s_game_a35_faststate dist/cubeevil4_live_gx/r36s_game_a35_faststate
+          for launcher in RE4-R36S-75-Teste-Estado.sh RE4-R36S-75-Otimizado.sh RE4-R36S-75-Referencia.sh;do
+            sh -n "port/r36s/gx-host/$launcher"
+            cp "port/r36s/gx-host/$launcher" dist/
+            chmod +x "dist/$launcher"
+          done
+          cp port/r36s/gx-host/README-R36S-75-FASTSTATE.md dist/LEIA-ME-75-STATE-FAST.md
+          chmod +x dist/cubeevil4_live_gx/r36s_game_a35_baseline dist/cubeevil4_live_gx/r36s_game_a35_faststate
+          test "$(find dist -type f | wc -l)" -eq 6
+      - name: Publish A/B only, do not alter stable build
+        uses: actions/upload-artifact@v4
+        with:
+          name: CubeEvil4-R36S-75pct-GX-State-Otimizado-ARM64
+          path: dist/
+          retention-days: 14
