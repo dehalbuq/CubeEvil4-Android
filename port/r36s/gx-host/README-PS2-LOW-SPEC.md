@@ -1,5 +1,48 @@
 # CubeEvil4 R36S / DarkOSRE — gráficos Low Spec inspirados no RE4 do PS2
 
+## Correção após teste real — Ultra anterior com objetos pretos
+
+O usuário testou `RE4-R36S-PS2-Balanceado.sh` e o antigo
+`RE4-R36S-PS2-Ultra.sh` no R36S com **180 segundos**, ambos encerrando
+normalmente sem erros reportados pelo OpenGL. Porém o **Ultra apresentou
+graves defeitos visuais: muitos itens ficaram completamente pretos**.
+
+Os logs confirmaram:
+
+- **Balanceado:** 1268 quadros, 251377 draws executados, **0 culls**,
+  401 passos de DOF ignorados, 118 shaders, 0 erros, código 0;
+- **Ultra anterior:** 1606 quadros, 173970 draws executados e
+  **235546 draws descartados por heurística de distância** — mais de
+  metade das chamadas consideradas/executadas. 624 passos DOF
+  ignorados, 63 shaders, 0 erros, código 0.
+
+A falta de erros GL significa apenas que o driver aceitou os comandos:
+**não indica visual correto**. A iluminação zerada também podia deixar
+materiais pretos porque alguns usam luz dinâmica com ambiente escuro.
+
+### Correções desta V2
+
+- **Culling de objetos distantes desativado em todos os perfis**:
+  a heurística antiga não tinha escala de cena comprovada e pode retirar
+  geometria da iluminação/sombra. O renderizador **recusa a ativação
+  sem `RE4_R36S_UNSAFE_FAR_CULL=1`**; o novo launcher não habilita esse modo.
+- **Nunca usar zero luzes dinâmicas:** o renderizador força duas se
+  receber 0; o **Ultra Seguro usa 2**. O PS2 Leve usa uma luz dinâmica
+  experimental e deve ser verificado visualmente.
+- **Ultra Seguro** remove DOF e fog, mas mantém todas as geometrias e
+  duas luzes dinâmicas. É uma variante de efeitos reduzidos, **não**
+  garantimos o grande ganho de FPS do Ultra anterior que eliminava
+  metade da cena.
+- Log novo `diagnostico_ps2_ultra_seguro_darkos.txt` preserva
+  `diagnostico_ps2_ultra_seguro_darkos.txt` do teste problemático.
+
+A versão estável `RE4-R36S-Estavel.sh` e a variante Balanceado
+permanecem os pontos de comparação. **Não há LOD automático igual ao
+port nativo de PS2**, pois exigiríamos simplificar modelos ou mexer
+na lógica/representação da cena, não cortar draws por distância arbitrária.
+
+---
+
 ## Objetivo
 
 O console **já executa gameplay real** sem falhas visuais conhecidas,
@@ -19,17 +62,13 @@ caminhos gráficos GX disponíveis nesta implementação.
 | Script | Luzes dinâmicas por canal | DOF/desfoque | Fog/neblina | Cortar objetos distantes |
 |---|---:|---|---|---|
 | `RE4-R36S-PS2-Balanceado.sh` | até 2 | desativado | mantida | NÃO |
-| `RE4-R36S-PS2-Leve.sh` | até 1 | desativado | mantida | atrás do limite de 90 unidades de câmera |
-| `RE4-R36S-PS2-Ultra.sh` | 0 (ambiente apenas) | desativado | removida | atrás do limite de 45 unidades de câmera |
+| `RE4-R36S-PS2-Leve.sh` | até 1 | desativado | mantida | NÃO |
+| `RE4-R36S-PS2-Ultra.sh` (**corrigido**) | até 2 | desativado | removida | NÃO |
 | `RE4-R36S-Estavel.sh` | original | original | original | NÃO (versão anterior preservada) |
 
-**A distância é experimental**: não há garantia de que 90/45 unidades
-equivalem a metros do jogo. O teste usa coordenadas de câmera do GX,
-não distância de simulação de inimigos. Corta *somente um draw call*
-se todos os vértices de uma malha forem mais distantes que o limite;
-não mexe em física, IA nem colisões. Para preservar HUD e personagens,
-o culling ignora projeções ortográficas, draw calls indexados por
-matriz por vértice e geometrias maiores que 4096 vértices.
+A remoção de desenho por distância foi **desligada** porque o
+culling antigo removia indiscriminadamente até superfícies necessárias
+para a iluminação. Não reutilize o ZIP V1 do Ultra para jogar.
 
 O modo Balanceado é o teste inicial recomendado. Os outros podem
 ocasionar *popping* de cenário, iluminação excessivamente escura ou
@@ -46,10 +85,10 @@ efeitos desaparecendo. Se a imagem estiver errada, volte ao estável.
    GX continua em ordem.
 3. Na variante Ultra, o shader fragment deixa de aplicar neblina GX;
    isso altera a estética e não necessariamente reduz muitos draws.
-4. Na variante PS2 Leve ou Ultra, detecta objetos completamente
-   distantes antes de `ProgramFor`, `ApplyState`, uploads de uniforms
-   e `glDrawElements`; se elegível, pula a chamada inteira.
-   **Não reduz a geometria dos personagens**, nem faz LOD automático.
+4. **Não corta draw calls por distância** nos presets corrigidos.
+   A heurística de distância anterior permanece somente para
+   depuração com flag explícita `RE4_R36S_UNSAFE_FAR_CULL=1`,
+   nunca definida pelos scripts incluídos.
 5. Mantém o cache persistente existente de programas GLES3 da Mali,
    com `GL_PROGRAM_BINARY_RETRIEVABLE_HINT`/`glGetProgramBinary`,
    `glProgramBinary` e fallback de compilação se necessário.
@@ -60,8 +99,8 @@ em 1, BaseVertex desligado, sem modificações no processo `re4_coreproc`.
 
 ## Instalação
 
-Baixe o artifact `CubeEvil4-R36S-PS2-LowSpec-ARM64` do GitHub Actions
-da branch `chatgpt/r36s-ps2-lowspec-renderer`. Extraia o ZIP em
+Baixe o artifact `CubeEvil4-R36S-PS2-LowSpec-Corrigido-ARM64` do GitHub Actions
+da branch `chatgpt/r36s-ps2-safe-ultra-fix`. Extraia o ZIP em
 `/roms/ports`. Ele **adiciona**:
 
 - `cubeevil4_live_gx/r36s_game_ps2`
