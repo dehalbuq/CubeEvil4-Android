@@ -1,0 +1,57 @@
+name: R36S - Cortex-A35 max O3 LTO with half EFB
+on:
+  push:
+    branches:
+      - chatgpt/r36s-half-efb-cortex-a35
+    paths:
+      - "port/r36s/gx-host/**"
+      - "port/android-decomp/app/src/main/cpp/gx_gl.cpp"
+      - ".github/workflows/r36s-half-efb-a35.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build-a35-arm64:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install native ARM64 compiler and GLES3 SDL2 development headers
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y cmake ninja-build g++ binutils pkg-config libsdl2-dev libgles-dev
+      - name: Validate Cortex-A35 and cross-unit optimization supported
+        run: |
+          printf 'int main(){return 0;}\n' > /tmp/a35_test.cpp
+          g++ -O3 -mcpu=cortex-a35 -mtune=cortex-a35 -flto=auto /tmp/a35_test.cpp -o /tmp/a35_test
+          file /tmp/a35_test
+      - name: Compile A/B 640x528 and 320x264 EFB R36S frontends
+        run: |
+          set -eux
+          cmake -S port/r36s/gx-host -B port/build/r36s-gx-host -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build port/build/r36s-gx-host --target r36s_game_a35_full r36s_game_a35_half --parallel 2
+          for bin in r36s_game_a35_full r36s_game_a35_half; do
+            file "port/build/r36s-gx-host/$bin"
+            readelf -h "port/build/r36s-gx-host/$bin" | grep -E 'Class:|Machine:'
+            test -s "port/build/r36s-gx-host/$bin"
+          done
+      - name: Package add-only R36S overlay with comparison scripts
+        run: |
+          set -euo pipefail
+          mkdir -p dist/cubeevil4_live_gx
+          cp port/build/r36s-gx-host/r36s_game_a35_full dist/cubeevil4_live_gx/
+          cp port/build/r36s-gx-host/r36s_game_a35_half dist/cubeevil4_live_gx/
+          for script in RE4-R36S-A35-EFB-Teste.sh RE4-R36S-Metade-Resolucao.sh RE4-R36S-A35-Normal.sh; do
+            sh -n "port/r36s/gx-host/$script"
+            cp "port/r36s/gx-host/$script" dist/
+            chmod +x "dist/$script"
+          done
+          cp port/r36s/gx-host/README-R36S-HALF-EFB-A35.md dist/LEIA-ME-R36S-MEIA-RESOLUCAO.md
+          chmod +x dist/cubeevil4_live_gx/r36s_game_a35_full dist/cubeevil4_live_gx/r36s_game_a35_half
+          test "$(find dist -type f | wc -l)" -eq 6
+      - name: Publish ARM64 half EFB / Cortex-A35 experiment
+        uses: actions/upload-artifact@v4
+        with:
+          name: CubeEvil4-R36S-Meia-Resolucao-A35-ARM64
+          path: dist/
+          retention-days: 14

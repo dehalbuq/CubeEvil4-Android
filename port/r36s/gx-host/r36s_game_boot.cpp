@@ -154,6 +154,11 @@ int main(int argc,char**argv) {
   int sec=argc>4?atoi(argv[4]):180;
   sec=std::max(5,std::min(sec,600));
   printf("RUN_MODE=GAME_BOOT MAX_SECONDS=%d\n",sec);
+#ifdef RE4_R36S_A35_TARGET
+  puts("A35_COMPILER_TARGET=cortex-a35 OPT_LEVEL=O3 LTO=enabled FAST_MATH=disabled");
+  printf("A35_EFB_REQUEST=%s\n",
+    getenv("RE4_R36S_HALF_EFB")?getenv("RE4_R36S_HALF_EFB"):"0");
+#endif
 #ifdef RE4_R36S_LOW_SPEC
   printf("LOW_SPEC_ENABLED=1\n");
   printf("LOW_SPEC_LIGHTS_MAX=%s\n",
