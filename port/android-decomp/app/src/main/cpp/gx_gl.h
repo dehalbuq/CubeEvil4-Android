@@ -61,6 +61,12 @@ struct GxStats {
   unsigned long long behindSum = 0;
   unsigned behindChecks = 0;
   unsigned behindCount[9] = {};
+#ifdef RE4_R36S_LOW_SPEC
+  // Opt-in visual quality reductions for the Mali-G31; never used by stable app.
+  unsigned culledFarDraws = 0;
+  unsigned culledFarTriangles = 0;
+  unsigned skippedAutofocus = 0;
+#endif
 };
 
 // Picture options of the app's menu (M11), applied by Init: multisampling of
