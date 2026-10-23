@@ -66,6 +66,54 @@ Embora proteja bordas e UVs, é um algoritmo geométrico aproximado,
 e não sabemos quantos triângulos dos modelos reais do RE4 serão elegíveis.
 Nunca trate um arquivo gerado como seguro para gameplay sem validar visualmente.
 
+## Como utilizar no Windows (sem instalar nada no R36S)
+
+1. Instale **Python 3** com o comando `py --version` funcionando.
+2. Baixe o artifact `CubeEvil4-R36S-LOD-Offline-Ferramenta` do Actions e
+   extraia na pasta `C:\\R36S-LOD` (vai criar `r36s-lod/tools`).
+3. Copie **um arquivo da sua própria extração GameCube**, por exemplo
+   `/roms/ports/cubeevil4_live_gx/data/disc0/st1/r100.das`
+   (no cartão SD do R36S) para `C:\\R36S-LOD\\r100.das`.
+   O caminho `st1` pode ter letras maiúsculas ou minúsculas.
+4. No PowerShell:
+
+```powershell
+cd C:\\R36S-LOD
+py r36s-lod\\tools\\r36s_extract_bin.py r100.das --list
+py r36s-lod\\tools\\r36s_extract_bin.py r100.das --out modelos
+```
+
+O primeiro comando apenas lista os ModelData válidos dentro do .das.
+O segundo **copia** cada modelo BIN (não altera o .das original) para
+`C:\\R36S-LOD\\modelos` e informa triângulos, partes e materiais
+alpha. Se não houver modelos válidos, experimente outro `.das` ou um
+`.drs` de inimigo/jogador; alguns podem ter apenas modelos animados.
+
+Depois escolha um `modelos\\r100_XXX_root.bin` e execute:
+
+```powershell
+py r36s-lod\\tools\\r36s_model_lod.py modelos\\r100_XXX_root.bin
+py r36s-lod\\tools\\r36s_model_lod.py modelos\\r100_XXX_root.bin --target 0.5 --max-error 0.025 --output meu_modelo_lod.bin
+```
+
+**Substitua XXX pelo número exibido**. O primeiro comando é dry-run.
+O segundo só grava `meu_modelo_lod.bin` quando há alguma redução
+segura no algoritmo. A mensagem `NO_SAFE_REDUCTION_FOUND` é esperada
+em muitos modelos; `SKIPPED` significa que não é um modelo estático
+elegível. Sem `--output` nunca haverá escrita de arquivo de LOD.
+
+O Windows pode usar `python` em lugar de `py` se o launcher
+não existir. O pacote é Python puro, sem requisitos de CUDA, Blender,
+Dolphin ou bibliotecas `pip`.
+
+**NÃO copie modelos simplificados para `data/disc0`**: os BIN
+originais continuam dentro dos arquivos DAS/DRS, e o port não tem
+mecanismo de substituição automática. A versão gerada é para inspeção
+e futura integração controlada. Não modifique o único cartão SD
+nem os saves.
+
+---
+
 ## Como utilizar no PC, somente para análise
 
 No diretório do pacote:
