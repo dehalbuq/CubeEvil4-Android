@@ -61,6 +61,16 @@ struct GxStats {
   unsigned long long behindSum = 0;
   unsigned behindChecks = 0;
   unsigned behindCount[9] = {};
+#ifdef RE4_GX_DEEP_PROFILE
+  // Optional diagnostic only. All values include possible waits in GLES driver.
+  std::uint64_t profileBufferUploadsNs = 0;
+  std::uint64_t profileDispatchNs = 0;
+  std::uint64_t profileDrawNs = 0;
+  std::uint64_t profileTextureNs = 0;
+  std::uint64_t profileCleanupNs = 0;
+  std::uint64_t profileDrawCalls = 0;
+  std::uint64_t profileTextureOps = 0;
+#endif
 };
 
 // Picture options of the app's menu (M11), applied by Init: multisampling of
