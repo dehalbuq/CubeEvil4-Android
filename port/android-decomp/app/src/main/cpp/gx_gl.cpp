@@ -257,6 +257,14 @@ struct GxRenderer::Impl {
   bool restorePending = false;  // the EFB is to be drawn back before it is drawn into
 
   GxOptions options;
+#ifdef RE4_R36S_LOW_SPEC
+  // 8 means no reduction. Limit only the number of dynamic vertex lights.
+  // EFB copies, shadow maps, sprites and fog state remain operational.
+  int lowSpecLightLimit = 8;
+  bool lowSpecSkipDof = false;
+  bool lowSpecSkipFog = false;
+  float lowSpecFarZ = 0.0f;
+#endif
   int samples = 1;
   float anisotropy = 1.0f;
   GLuint xfbFbo = 0, xfbTex = 0;
@@ -668,8 +676,14 @@ struct GxRenderer::Impl {
     }
     if (action && reg == 0x52)
       EfbCopy(value);
-    if (action && reg == 0x5A)
+    if (action && reg == 0x5A) {
+#ifdef RE4_R36S_LOW_SPEC
+      if (lowSpecSkipDof) {
+        stats.skippedAutofocus++;
+      } else
+#endif
       Autofocus(value);
+    }
   }
 
   void Dirty(int lo, int hi) {
@@ -1438,8 +1452,23 @@ struct GxRenderer::Impl {
     k.layout = d.layout;
     k.numChans = xfReg[0x09] & 3;
     k.numTexGens = std::min(8u, xfReg[0x3F] & 15);
-    for (int i = 0; i < 4; i++)
+    for (int i = 0; i < 4; i++) {
       k.chan[i] = i % 2 < static_cast<int>(k.numChans) ? xfReg[0x0E + i] & 0x7FFF : 0;
+#ifdef RE4_R36S_LOW_SPEC
+      if (lowSpecLightLimit < 8 && (k.chan[i] & 2u)) {
+        // One shader light mask per colour/alpha channel: keep ambient lighting
+        // and at most N selected dynamic lights, in GX priority order.
+        const std::uint32_t c = k.chan[i];
+        const std::uint32_t enabled = ((c >> 2) & 15u) | (((c >> 11) & 15u) << 4);
+        unsigned retained = 0, count = 0;
+        for (unsigned bit = 0; bit < 8; bit++)
+          if ((enabled & (1u << bit)) && count++ < static_cast<unsigned>(lowSpecLightLimit))
+            retained |= 1u << bit;
+        k.chan[i] = (c & ~((15u << 2) | (15u << 11))) |
+                    ((retained & 15u) << 2) | (((retained >> 4) & 15u) << 11);
+      }
+#endif
+    }
     k.dualTex = xfReg[0x12] & 1;
     for (unsigned i = 0; i < k.numTexGens; i++) {
       k.texGen[i] = xfReg[0x40 + i] & 0x3FFFF;
@@ -1470,6 +1499,9 @@ struct GxRenderer::Impl {
     }
     k.alphaTest = (bp[0xF3] >> 16) & 0xFF;
     k.fog = (bp[0xF1] >> 20) & 15;
+#ifdef RE4_R36S_LOW_SPEC
+    if (lowSpecSkipFog) k.fog = 0;
+#endif
     return k;
   }
 
@@ -1634,6 +1666,39 @@ struct GxRenderer::Impl {
     if (d.indexCount == 0 || d.vertexOffset + static_cast<std::uint64_t>(d.vertexCount) * d.stride > chunk.vertexBytes ||
         d.indexOffset + d.indexCount > chunk.indexCount)
       return;
+#ifdef RE4_R36S_LOW_SPEC
+    // Conservative camera-space far clipping of entire TRIANGLE draw calls.
+    // All vertex positions are examined (not sampling!). Never cull UI,
+    // matrix-indexed/skinned objects or huge batches. This does NOT change
+    // the game's game-world visibility, collisions or enemy activation.
+    if (lowSpecFarZ > 0.0f && (d.primitive & 0xffu) == RE4_GX_TRIANGLES &&
+        !(d.layout & RE4_GX_V_MATRIX) && xfReg[0x26] == 0u &&
+        d.stride >= 12u && d.vertexCount >= 3u && d.vertexCount <= 4096u) {
+      const unsigned matrixRow = d.matrices[0] & 63u;
+      if (matrixRow + 2u < 64u) {
+        const float *row = xf.posTex[matrixRow + 2u];
+        bool entirelyFar = true;
+        for (unsigned v = 0; v < d.vertexCount; v++) {
+          const std::uint8_t *bytes = chunk.vertices + d.vertexOffset +
+                                      static_cast<std::size_t>(v) * d.stride;
+          float p[3];
+          std::memcpy(p, bytes, sizeof(p));
+          const float z = row[0] * p[0] + row[1] * p[1] + row[2] * p[2] + row[3];
+          // Forward on GameCube view coordinates is -Z. If any vertex
+          // might be near the camera, the draw is kept unchanged.
+          if (!(z < -lowSpecFarZ)) {
+            entirelyFar = false;
+            break;
+          }
+        }
+        if (entirelyFar) {
+          stats.culledFarDraws++;
+          stats.culledFarTriangles += d.indexCount / 3u;
+          return;
+        }
+      }
+    }
+#endif
     // the shader: the one of the last draw while no register that shapes it changed
     if (keyDirty || d.layout != keyLayout) {
       key = MakeKey(d);
@@ -2406,6 +2471,26 @@ bool GxRenderer::Init(int scale, std::string *error) {
   if (!error)
     error = &dummy;
   m.scale = std::max(1, scale);
+#ifdef RE4_R36S_LOW_SPEC
+  // Tunables come only from the experimental R36S launcher.
+  auto flag = [](const char* key) {
+    const char* value = std::getenv(key);
+    return value && *value == '1';
+  };
+  m.lowSpecSkipDof = flag("RE4_R36S_SKIP_DOF");
+  m.lowSpecSkipFog = flag("RE4_R36S_SKIP_FOG");
+  if (const char* lights = std::getenv("RE4_R36S_LIGHTS_MAX")) {
+    const int parsed = std::atoi(lights);
+    if (parsed >= 0 && parsed <= 8) m.lowSpecLightLimit = parsed;
+  }
+  if (const char* distance = std::getenv("RE4_R36S_FAR_Z")) {
+    const float parsed = std::strtof(distance, nullptr);
+    if (std::isfinite(parsed) && parsed >= 0.0f && parsed <= 10000.0f)
+      m.lowSpecFarZ = parsed;
+  }
+  GXLOG("R36S_LOWSPEC skip_dof=%d light_limit=%d skip_fog=%d camera_far_z=%.1f",
+        m.lowSpecSkipDof?1:0,m.lowSpecLightLimit,m.lowSpecSkipFog?1:0,m.lowSpecFarZ);
+#endif
   // glDrawElementsBaseVertex: GLES 3.2, or the OES / EXT extension
   // (RE4_GX_BASEVERTEX=0 keeps the per-draw attribute setup)
   {

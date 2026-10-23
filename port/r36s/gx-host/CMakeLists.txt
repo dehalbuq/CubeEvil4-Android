@@ -62,3 +62,19 @@ target_compile_definitions(r36s_game_shadercache PRIVATE RE4_R36S_SHADER_CACHE=1
 target_compile_options(r36s_game_shadercache PRIVATE -O2 -Wall -Wextra -ffp-contract=off -g -fno-omit-frame-pointer)
 target_link_libraries(r36s_game_shadercache PRIVATE PkgConfig::SDL2 "${GLESV2_LIB}" dl pthread)
 target_link_options(r36s_game_shadercache PRIVATE -rdynamic -Wl,--build-id)
+
+# Resident Evil 4 PS2-inspired graphics downgrade. Isolated from validated
+# stable frontend, shader-cache tests and the original GameCube renderer.
+add_executable(r36s_game_ps2
+  r36s_game_boot.cpp
+  "${RE4_ANDROID_CPP}/gx_gl.cpp"
+  "${RE4_ANDROID_CPP}/gx_gl_shader.cpp"
+  "${RE4_ANDROID_CPP}/gx_texture.cpp"
+  "${RE4_WHOLE_RUNTIME}/core_ipc.cpp"
+  "${RE4_WHOLE_RUNTIME}/core_ipc_client.cpp"
+)
+target_include_directories(r36s_game_ps2 PRIVATE "${RE4_ANDROID_CPP}" "${RE4_WHOLE_RUNTIME}")
+target_compile_definitions(r36s_game_ps2 PRIVATE RE4_R36S_LOW_SPEC=1 RE4_R36S_SHADER_CACHE=1)
+target_compile_options(r36s_game_ps2 PRIVATE -O2 -Wall -Wextra -ffp-contract=off -g -fno-omit-frame-pointer)
+target_link_libraries(r36s_game_ps2 PRIVATE PkgConfig::SDL2 "${GLESV2_LIB}" dl pthread)
+target_link_options(r36s_game_ps2 PRIVATE -rdynamic -Wl,--build-id)
