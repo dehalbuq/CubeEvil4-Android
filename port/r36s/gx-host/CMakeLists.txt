@@ -62,3 +62,19 @@ target_compile_definitions(r36s_game_profile PRIVATE RE4_R36S_PROFILE=1)
 target_compile_options(r36s_game_profile PRIVATE -O2 -Wall -Wextra -ffp-contract=off -g -fno-omit-frame-pointer)
 target_link_libraries(r36s_game_profile PRIVATE PkgConfig::SDL2 "${GLESV2_LIB}" dl pthread)
 target_link_options(r36s_game_profile PRIVATE -rdynamic -Wl,--build-id)
+
+# Deep GX profiling on the R36S; only this target carries the extra instrumentation.
+# Never replace the already validated r36s_game_boot or r36s_game_profile.
+add_executable(r36s_game_deep_profile
+  r36s_game_boot.cpp
+  "${RE4_ANDROID_CPP}/gx_gl.cpp"
+  "${RE4_ANDROID_CPP}/gx_gl_shader.cpp"
+  "${RE4_ANDROID_CPP}/gx_texture.cpp"
+  "${RE4_WHOLE_RUNTIME}/core_ipc.cpp"
+  "${RE4_WHOLE_RUNTIME}/core_ipc_client.cpp"
+)
+target_include_directories(r36s_game_deep_profile PRIVATE "${RE4_ANDROID_CPP}" "${RE4_WHOLE_RUNTIME}")
+target_compile_definitions(r36s_game_deep_profile PRIVATE RE4_R36S_PROFILE=1 RE4_GX_DEEP_PROFILE=1)
+target_compile_options(r36s_game_deep_profile PRIVATE -O2 -Wall -Wextra -ffp-contract=off -g -fno-omit-frame-pointer)
+target_link_libraries(r36s_game_deep_profile PRIVATE PkgConfig::SDL2 "${GLESV2_LIB}" dl pthread)
+target_link_options(r36s_game_deep_profile PRIVATE -rdynamic -Wl,--build-id)
