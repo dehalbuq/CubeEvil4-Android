@@ -5,6 +5,7 @@
 #include "gx_gl.h"
 #include "re4_gx_frame.h"
 #include "re4_gx_frame_io.h"
+#include "r36s_gx_synthetic.h"
 
 #include <SDL2/SDL.h>
 #include <GLES3/gl3.h>
@@ -49,23 +50,6 @@ bool load(const char* path,re4gxio::Loaded& loaded) {
        loaded.chunk.sequence,loaded.frame,loaded.chunk.opWords,loaded.chunk.vertexBytes);
   return true;
 }
-
-struct Demo {
-  uint32_t ops[8] = {
-      RE4_GX_OP_BP | (1u<<8), (0x49u<<24),
-      RE4_GX_OP_BP | (1u<<8), (0x4Au<<24) | (479u<<10) | 639u,
-      RE4_GX_OP_BP | (1u<<8), (0x4Bu<<24),
-      RE4_GX_OP_BP | (1u<<8), (0x52u<<24) | (1u<<14)
-  };
-  Re4GxChunk chunk{};
-  Demo(){
-    chunk.version=RE4_GX_FRAME_VERSION;
-    chunk.sequence=1;
-    chunk.flags=RE4_GX_CHUNK_RESET | RE4_GX_CHUNK_XFB;
-    chunk.ops=ops;chunk.opWords=8;
-    chunk.xfbWidth=kWidth;chunk.xfbHeight=kHeight;
-  }
-};
 
 int go(int argc,char** argv) {
   const char* forced=std::getenv("SDL_VIDEODRIVER");
@@ -117,7 +101,7 @@ int go(int argc,char** argv) {
       // clear any unrelated legacy GL error before judging frame operations.
       for(int i=0;i<16 && glGetError()!=GL_NO_ERROR;i++){}
       re4gxio::Loaded loaded;
-      Demo demo;
+      r36s_synthetic::Demo demo;
       const Re4GxChunk* chunk=&demo.chunk;
       if(argc>1){
         if(!load(argv[1],loaded))result=6;
@@ -131,6 +115,11 @@ int go(int argc,char** argv) {
         unsigned w=0,h=0;
         GLuint xfb=renderer.Xfb(&w,&h);
         std::printf("GX_XFB=%u WIDTH=%u HEIGHT=%u\n",xfb,w,h);
+        if(argc==1) {
+          bool pixels=r36s_synthetic::Pixels(xfb,w,h);
+          std::printf("GX_SYNTHETIC_PIXELS=%s\n",pixels?"OK":"FAILED");
+          if(!pixels || stats.draws!=2 || stats.shaderErrors || !stats.programs)result=10;
+        }
         glBindFramebuffer(GL_FRAMEBUFFER,0);
         glViewport(0,0,kWidth,kHeight);
         glClearColor(0.1f,0.1f,0.15f,1.0f);
@@ -145,7 +134,7 @@ int go(int argc,char** argv) {
             SDL_GL_SwapWindow(window);
             SDL_Delay(350);
           }
-          std::printf("RESULT=GX_RENDERER_INITIALIZED_AND_DISPLAY_COPY_OK\n");
+          std::printf("RESULT=%s\n",argc==1?"GX_REAL_SHADERS_TRIANGLES_AND_XFB_OK":"GX_FRAME_REPLAY_OK");
         }
       }
       memory("AFTER");
