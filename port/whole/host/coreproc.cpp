@@ -66,6 +66,7 @@
 #include <android/log.h>
 #else
 #include "low_memory.h"
+extern "C" void re4_reserve_high_memory(void);
 #endif
 
 using namespace re4ipc;
@@ -916,6 +917,10 @@ int main(int argc, char** argv)
     }
 #else
     // as the Linux loader of re4_host: everything below 0x83000000 held, MEM1 first
+    /* 64-bit game pointers must remain in the 0x83000000..4GB window. */
+#if __SIZEOF_POINTER__ == 8
+    re4_reserve_high_memory();  // must precede reserveLowMemory (setenv allocates)
+#endif
     unsetenv("RE4_MEM1_PLACEHOLDER");
     reserveLowMemory();
     placeholder = getenv("RE4_MEM1_PLACEHOLDER") ? "reserved" : "NOT reserved";
