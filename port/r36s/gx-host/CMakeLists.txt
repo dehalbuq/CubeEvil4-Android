@@ -43,3 +43,6 @@ add_executable(r36s_game_boot
 target_include_directories(r36s_game_boot PRIVATE "${RE4_ANDROID_CPP}" "${RE4_WHOLE_RUNTIME}")
 target_compile_options(r36s_game_boot PRIVATE -O2 -Wall -Wextra -ffp-contract=off)
 target_link_libraries(r36s_game_boot PRIVATE PkgConfig::SDL2 "${GLESV2_LIB}" dl pthread)
+# Preserve native frame pointers and ELF DWARF data for R36S SIGSEGV address resolution.
+target_compile_options(r36s_game_boot PRIVATE -g -fno-omit-frame-pointer -fno-optimize-sibling-calls)
+target_link_options(r36s_game_boot PRIVATE -rdynamic -Wl,--build-id)
