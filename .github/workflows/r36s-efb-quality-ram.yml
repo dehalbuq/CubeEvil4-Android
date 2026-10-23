@@ -1,0 +1,49 @@
+name: R36S - A35 EFB quality scales and RAM telemetry
+on:
+  push:
+    branches:
+      - chatgpt/r36s-adaptive-quality-memory-study
+    paths:
+      - "port/r36s/gx-host/**"
+      - "port/android-decomp/app/src/main/cpp/gx_gl.cpp"
+      - ".github/workflows/r36s-efb-quality-ram.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build-scales-a35-arm64:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install native Cortex-A35 toolchain dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y cmake ninja-build g++ binutils pkg-config libsdl2-dev libgles-dev
+      - name: Compile new independent A35 scalable frontend only
+        run: |
+          set -eux
+          cmake -S port/r36s/gx-host -B port/build/r36s-gx-host -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build port/build/r36s-gx-host --target r36s_game_a35_scalable --parallel 2
+          file port/build/r36s-gx-host/r36s_game_a35_scalable
+          readelf -h port/build/r36s-gx-host/r36s_game_a35_scalable | grep -E 'Class:|Machine:'
+          test -s port/build/r36s-gx-host/r36s_game_a35_scalable
+      - name: Create safe new EFB resolution quality profiles
+        run: |
+          set -euo pipefail
+          mkdir -p dist/cubeevil4_live_gx
+          cp port/build/r36s-gx-host/r36s_game_a35_scalable dist/cubeevil4_live_gx/
+          for launcher in RE4-R36S-Escolher-Resolucao.sh RE4-R36S-Qualidade-75.sh RE4-R36S-Qualidade-50.sh RE4-R36S-Qualidade-37.sh; do
+            sh -n "port/r36s/gx-host/$launcher"
+            cp "port/r36s/gx-host/$launcher" dist/
+            chmod +x "dist/$launcher"
+          done
+          cp port/r36s/gx-host/README-R36S-SCALES-RAM.md dist/LEIA-ME-ESCALAS-RAM.md
+          chmod +x dist/cubeevil4_live_gx/r36s_game_a35_scalable
+          test "$(find dist -type f | wc -l)" -eq 6
+      - name: Publish R36S GLES framebuffer quality/RAM experiment
+        uses: actions/upload-artifact@v4
+        with:
+          name: CubeEvil4-R36S-Escalas-Qualidade-A35-ARM64
+          path: dist/
+          retention-days: 14

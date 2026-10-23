@@ -42,6 +42,24 @@ void coreMemory(int pid){
   }
   fclose(f);
 }
+#ifdef RE4_R36S_SCALABLE_EFB
+void systemMemory(const char* stage) {
+  FILE* f=fopen("/proc/meminfo","r");
+  if(!f){puts("SYSTEM_MEMINFO=UNAVAILABLE");return;}
+  unsigned long available=0,freeBytes=0,swap=0;
+  char line[256];
+  while(fgets(line,sizeof(line),f)){
+    if(sscanf(line,"MemAvailable: %lu kB",&available)==1)continue;
+    if(sscanf(line,"MemFree: %lu kB",&freeBytes)==1)continue;
+    if(sscanf(line,"SwapFree: %lu kB",&swap)==1)continue;
+  }
+  fclose(f);
+  printf("SYSTEM_MEMORY_SAMPLE STAGE=%s MEM_AVAILABLE_KB=%lu MEM_FREE_KB=%lu SWAP_FREE_KB=%lu\n",
+       stage,available,freeBytes,swap);
+  if(available && available<131072u)
+    printf("SYSTEM_MEMORY_WARNING=LOW_AVAILABLE_RAM_KB_%lu\n",available);
+}
+#endif
 void memory(const char* stage) {
   FILE* f=fopen("/proc/self/status","r");
   if(!f)return;
@@ -154,6 +172,11 @@ int main(int argc,char**argv) {
   int sec=argc>4?atoi(argv[4]):180;
   sec=std::max(5,std::min(sec,600));
   printf("RUN_MODE=GAME_BOOT MAX_SECONDS=%d\n",sec);
+#ifdef RE4_R36S_SCALABLE_EFB
+  printf("SCALABLE_EFB_REQUEST=%s\n",
+         getenv("RE4_R36S_RENDER_SCALE")?getenv("RE4_R36S_RENDER_SCALE"):"(unset)");
+  systemMemory("SESSION_START");
+#endif
 #ifdef RE4_R36S_A35_TARGET
   puts("A35_COMPILER_TARGET=cortex-a35 OPT_LEVEL=O3 LTO=enabled FAST_MATH=disabled");
   printf("A35_EFB_REQUEST=%s\n",
@@ -398,6 +421,9 @@ int main(int argc,char**argv) {
 #endif
           memory("FRONTEND");
           coreMemory(corePid);
+#ifdef RE4_R36S_SCALABLE_EFB
+          systemMemory("PERFORMANCE_WINDOW");
+#endif
           lastTelemetryFrames=processed;
           telemetryStart=timeNow;
           telemetryAt=timeNow+std::chrono::seconds(5);
@@ -427,6 +453,9 @@ int main(int argc,char**argv) {
               swapMode,processed,presented,swapMode==4?"NO":"YES");
       memory("END");
       coreMemory(corePid);
+#ifdef RE4_R36S_SCALABLE_EFB
+      systemMemory("SESSION_END");
+#endif
       r36s_crash::mark("renderer_release",processed,last);
       renderer.Release();
     }
