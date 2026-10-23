@@ -9,11 +9,11 @@ The existing `gx_gl.cpp`, `gx_gl_shader.cpp` and `gx_texture.cpp` are compiled n
 On the R36S:
 1. SDL2 creates a KMSDRM GLES3 context.
 2. The original renderer creates its GameCube-sized EFB buffers, GL objects and utility shaders.
-3. A generated synthetic GX chunk performs the GameCube EFB -> XFB display copy.
-4. The renderer presents this image to the SDL2 window.
-5. Graphics errors, renderer statistics and memory consumption are logged.
+3. A synthetic original GX command stream clears blue and draws a green quad and a red triangle with the real TEV shader translator.
+4. It verifies three pixel colors in the GPU-produced XFB and presents the result on the SDL2 window.
+5. Graphics errors, shader statistics, pixel colors, and memory consumption are logged.
 
-**No ISO is required.** The screen may be black for this smoke test: the renderer begins with a black EFB. The log is the authoritative outcome.
+**No ISO is required.** The test should display a blue background with green and red shapes; the log independently checks GPU pixel colors. The authoritative result is `GX_REAL_SHADERS_TRIANGLES_AND_XFB_OK`.
 
 A single file argument can be used to replay an authentic `RE4GXCH1` command chunk dumped by CubeEvil4 tooling, but do not share copyrighted game assets publicly. It caps each input at 48 MiB; sequential frame playback is not yet implemented.
 
@@ -34,7 +34,7 @@ The report appears at:
 - Linux ARM64 graphics initialization test only, no game boot, input mapping, audio, menu or game loop.
 - Memory and real shader behavior must be measured on the Mali-G31 itself.
 - The GPU may reject shaders/FBO configurations accepted by x86 Mesa.
-- The synthetic GX frame produces a valid display copy but does not contain game characters or room geometry.
+- The synthetic GX frame exercises polygon drawing with the game's GX renderer, but does not contain game characters or room geometry.
 - No claim of playable Resident Evil 4 or acceptable FPS until actual gameplay measurements.
 
 ## Source
