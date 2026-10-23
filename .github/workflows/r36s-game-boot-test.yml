@@ -1,0 +1,43 @@
+name: R36S - first real-game boot frontend (experimental)
+
+on:
+  push:
+    branches:
+      - chatgpt/r36s-first-game-boot
+    paths:
+      - "port/r36s/gx-host/**"
+      - ".github/workflows/r36s-game-boot-test.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install SDL2, GLES3 and C++ build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y cmake ninja-build g++ pkg-config libsdl2-dev libgles-dev
+      - name: Compile guarded optional first boot for AArch64
+        run: |
+          cmake -S port/r36s/gx-host -B port/build/r36s-gx-host -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build port/build/r36s-gx-host --target r36s_game_boot --parallel 2
+          file port/build/r36s-gx-host/r36s_game_boot
+          readelf -h port/build/r36s-gx-host/r36s_game_boot | grep -E "Class:|Machine:"
+      - name: Assemble additive package, do not replace previous core or renderer test
+        run: |
+          mkdir -p dist/cubeevil4_live_gx
+          cp port/build/r36s-gx-host/r36s_game_boot dist/cubeevil4_live_gx/
+          cp port/r36s/gx-host/RE4-Primeiro-Boot.sh dist/
+          cp port/r36s/gx-host/README-PRIMEIRO-BOOT.md dist/cubeevil4_live_gx/
+          chmod +x dist/cubeevil4_live_gx/r36s_game_boot dist/RE4-Primeiro-Boot.sh
+      - name: Publish ARM64 first boot binary and launcher
+        uses: actions/upload-artifact@v4
+        with:
+          name: CubeEvil4-R36S-Primeiro-Boot-Experimental
+          path: dist/
+          retention-days: 14
