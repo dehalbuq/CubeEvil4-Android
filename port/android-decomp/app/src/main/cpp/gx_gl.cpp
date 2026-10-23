@@ -228,7 +228,14 @@ struct Copy {
 } // namespace
 
 struct GxRenderer::Impl {
+#ifdef RE4_R36S_HALF_EFB
+  // Experimental half-pixel-density EFB. GameCube logical coordinates remain
+  // 640x528; framebuffer textures and all EFB copies are 320x264.
+  // Fallback to original code in every build without this compile definition.
+  float scale = 1.0f;
+#else
   int scale = 1;
+#endif
   GxStats stats;
 
   // register state
@@ -1087,8 +1094,9 @@ struct GxRenderer::Impl {
     if (!msaaFbo)
       return;
     const int fw = kEfbWidth * scale, fh = kEfbHeight * scale;
-    int x0 = std::max(0, x - scale), y0 = std::max(0, y - scale);
-    int x1 = std::min(fw, x + w + scale), y1 = std::min(fh, y + h + scale);
+    const int margin = std::max(1, static_cast<int>(std::ceil(scale)));
+    int x0 = std::max(0, x - margin), y0 = std::max(0, y - margin);
+    int x1 = std::min(fw, x + w + margin), y1 = std::min(fh, y + h + margin);
     if (options.fullResolve) {
       x0 = y0 = 0;
       x1 = fw;
@@ -2470,7 +2478,19 @@ bool GxRenderer::Init(int scale, std::string *error) {
   std::string dummy;
   if (!error)
     error = &dummy;
+#ifdef RE4_R36S_HALF_EFB
+  m.scale = 1.0f;
+  // Explicit opt-in; never apply lower resolution to the stable renderer.
+  if (const char* half = std::getenv("RE4_R36S_HALF_EFB")) {
+    if (*half == '1' && half[1] == '\0') m.scale = 0.5f;
+  }
+  GXLOG("R36S_EFB_RENDER_SCALE=%.2f EFB_INTERNAL_SIZE=%dx%d LOGICAL_SIZE=%dx%d",
+        static_cast<double>(m.scale),
+        static_cast<int>(kEfbWidth * m.scale),static_cast<int>(kEfbHeight * m.scale),
+        kEfbWidth,kEfbHeight);
+#else
   m.scale = std::max(1, scale);
+#endif
 #ifdef RE4_R36S_LOW_SPEC
   // Tunables come only from the experimental R36S launcher.
   auto flag = [](const char* key) {
@@ -2809,7 +2829,9 @@ void GxRenderer::Limits(int *maxSamples, float *maxAnisotropy) {
   }
 }
 
-int GxRenderer::Scale() const { return impl_->scale; }
+// Existing API reports integral upscaling; half resolution has no integer
+// representation and is exposed by R36S_EFB_RENDER_SCALE in diagnostics.
+int GxRenderer::Scale() const { return std::max(1, static_cast<int>(impl_->scale)); }
 
 const GxStats &GxRenderer::Stats() const { return impl_->stats; }
 
