@@ -110,3 +110,7 @@ function(re4_a35_target target half_efb)
 endfunction()
 re4_a35_target(r36s_game_a35_full FALSE)
 re4_a35_target(r36s_game_a35_half TRUE)
+# A new standalone binary with fixed runtime-selected 75%, 50%, 37.5%
+# scales; existing A35 half/full binaries are NOT touched.
+re4_a35_target(r36s_game_a35_scalable TRUE)
+target_compile_definitions(r36s_game_a35_scalable PRIVATE RE4_R36S_SCALABLE_EFB=1)
