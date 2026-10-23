@@ -1,0 +1,41 @@
+name: R36S graphics probe - ARM64
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "port/r36s/gles-probe/**"
+      - ".github/workflows/r36s-gles-probe.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install AArch64 cross compiler
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+      - name: Cross-compile graphics probe
+        run: |
+          set -eux
+          aarch64-linux-gnu-gcc -std=c11 -O2 -Wall -Wextra \
+            port/r36s/gles-probe/r36s_gles_probe.c -o r36s_gles_probe -ldl
+          file r36s_gles_probe
+          readelf -h r36s_gles_probe | grep -E 'Class:|Machine:'
+          cp port/r36s/gles-probe/RE4-GLES-Test.sh .
+          cp port/r36s/gles-probe/README.md README-gles-probe.md
+      - name: Publish portable probe binary and source
+        uses: actions/upload-artifact@v4
+        with:
+          name: r36s-gles-probe-aarch64
+          path: |
+            r36s_gles_probe
+            RE4-GLES-Test.sh
+            README-gles-probe.md
+            port/r36s/gles-probe/r36s_gles_probe.c
+          retention-days: 14
