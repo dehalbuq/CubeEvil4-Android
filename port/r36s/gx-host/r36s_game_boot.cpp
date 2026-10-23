@@ -6,6 +6,7 @@
 #include "gx_gl.h"
 #include "re4_core_client.h"
 #include "re4_gx_frame.h"
+#include "r36s_boot_crash_trace.h"
 #include <SDL2/SDL.h>
 #include <GLES3/gl3.h>
 #include <algorithm>
@@ -117,6 +118,13 @@ void reportStats(const re4gx::GxRenderer& r){
 
 int main(int argc,char**argv) {
   setvbuf(stdout,nullptr,_IONBF,0);
+  setvbuf(stderr,nullptr,_IONBF,0);
+  r36s_crash::mark("installing_sigaction",0,0);
+  if(!r36s_crash::install()){
+    fprintf(stderr,"CRASH_TRACE_INSTALL_WARNING=unavailable\n");
+  }else{
+    fprintf(stderr,"CRASH_TRACE_INSTALLED=YES (PC,LR,stage,maps)\n");
+  }
   puts("CUBEEVIL4_R36S_FIRST_REAL_GAME_DATA_BOOT");
   if(argc<4){
     fprintf(stderr,"usage: r36s_game_boot COREFOLDER MODULESFOLDER DATADIR [SECONDS]\n");
@@ -138,6 +146,7 @@ int main(int argc,char**argv) {
   spawn.helloSeconds=30;
   re4ipc::configure(spawn);
   memory("START");
+  r36s_crash::mark("ipc_reserve",0,0);
   if(re4ipc_reserve(dataDir.c_str(),modules.c_str())!=1){
     fprintf(stderr,"CORE_IPC_RESERVE_FAILED=%s\n",re4ipc_message());
     re4ipc::shutdown(1000);
@@ -146,12 +155,14 @@ int main(int argc,char**argv) {
   Re4CorePad pad{};
   // Keep controls neutral until the first SDL input poll.
   re4ipc_pad(&pad);
+  r36s_crash::mark("core_start",0,0);
   if(re4ipc_start()!=1){
     fprintf(stderr,"CORE_IPC_START_FAILED=%s\n",re4ipc_message());
     re4ipc::shutdown(1000);
     return 4;
   }
   printf("CORE_PID=%d\n",re4ipc::pid());
+  r36s_crash::mark("sdl_init",0,0);
   if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_EVENTS|SDL_INIT_GAMECONTROLLER)!=0) {
     fprintf(stderr,"SDL_ERROR=%s\n",SDL_GetError());
     re4ipc::shutdown(3000);return 5;
@@ -168,6 +179,7 @@ int main(int argc,char**argv) {
   SDL_Window* window=SDL_CreateWindow("CubeEvil4 IPC GX R36S",SDL_WINDOWPOS_CENTERED,
      SDL_WINDOWPOS_CENTERED,kW,kH,SDL_WINDOW_SHOWN|SDL_WINDOW_OPENGL);
   if(!window){fprintf(stderr,"SDL_WINDOW_ERROR=%s\n",SDL_GetError());SDL_Quit();re4ipc::shutdown(3000);return 6;}
+  r36s_crash::mark("egl_create",0,0);
   SDL_GLContext context=SDL_GL_CreateContext(window);
   if(!context){
     fprintf(stderr,"SDL_CONTEXT_ERROR=%s\n",SDL_GetError());
@@ -183,6 +195,7 @@ int main(int argc,char**argv) {
     opts.samples=1;opts.tiledMsaa=false;
     renderer.SetOptions(opts);
     std::string error;
+    r36s_crash::mark("renderer_init",0,0);
     if(!renderer.Init(1,&error)){
       fprintf(stderr,"GX_INIT_ERROR=%s\n",error.c_str());
       result=8;
@@ -199,13 +212,17 @@ int main(int argc,char**argv) {
           }
         }
         if(result)break;
+        r36s_crash::mark("core_state",processed,last);
         int state=re4ipc_state();
         if(state==RE4_CORE_FAILED || state==RE4_CORE_ENDED){
           printf("CORE_STATE=%d MSG=%s\n",state,re4ipc_message());result=14;break;
         }
+        r36s_crash::mark("input_controller",processed,last);
         updatePad(joy);
+        r36s_crash::mark("ipc_vsync",processed,last);
         re4ipc_vsync(nowNs());
         // Receive the SAME decoded GX stream that the Android core mode receives.
+        r36s_crash::mark("ipc_gx_acquire",processed,last);
         if(const Re4GxChunk* c=re4ipc_gx_acquire()){
           if(c->version!=RE4_GX_FRAME_VERSION || c->opWords>(1u<<22) ||
              c->vertexBytes>(32u<<20) || c->blobBytes>(32u<<20)){
@@ -218,19 +235,32 @@ int main(int argc,char**argv) {
             re4ipc_gx_release(c);result=10;break;
           }
           last=c->sequence;
+          if(processed<40 || processed%10==0){
+            printf("TRACE_GX_FRAME_BEGIN=%u GX_SEQUENCE=%u OPS=%u VERTEX_BYTES=%u INDEX_COUNT=%u BLOB_BYTES=%u DRAWS=%u TEXTURE_BYTES=%u FLAGS=0x%x\n",
+              processed+1,last,c->opWords,c->vertexBytes,c->indexCount,c->blobBytes,c->draws,c->textureBytes,c->flags);
+          }
+          r36s_crash::mark("renderer_Run_GX",processed+1,last);
           renderer.Run(*c);
+          r36s_crash::mark("renderer_Run_return",processed+1,last);
+          if(processed<40 || processed%10==0)puts("TRACE_RENDER_RUN_OK=1");
           glBindFramebuffer(GL_FRAMEBUFFER,0);
           glViewport(0,0,kW,kH);
           glClearColor(0,0,0,1);
           glClear(GL_COLOR_BUFFER_BIT);
+          r36s_crash::mark("renderer_Present",processed+1,last);
           if(renderer.Present(0,0,kW,kH))presented++;
+          r36s_crash::mark("renderer_Present_return",processed+1,last);
           GLenum e=glGetError();
           if(e!=GL_NO_ERROR) {
             if(glErrors<12)printf("CORE_GX_GL_ERROR_FRAME_%u=0x%x\n",processed,e);
             glErrors++;
           }
+          r36s_crash::mark("egl_swap",processed+1,last);
           SDL_GL_SwapWindow(window);
+          r36s_crash::mark("ipc_gx_release",processed+1,last);
           re4ipc_gx_release(c);
+          r36s_crash::mark("frame_complete",processed+1,last);
+          if(processed<40 || processed%10==0)puts("TRACE_FRAME_COMPLETE=1");
           processed++;
           if(processed==1 || processed%10==0){
             const auto& s=renderer.Stats();
@@ -240,13 +270,16 @@ int main(int argc,char**argv) {
         }
         // Drain generated test audio to keep the core's IPC ring moving.
         int16_t audio[512*2]{};
+        r36s_crash::mark("ipc_audio_drain",processed,last);
         re4ipc_audio(audio,512);
+        r36s_crash::mark("ipc_audio_return",processed,last);
         nextTick+=std::chrono::milliseconds(16);
         const auto current=Clock::now();
         if(nextTick>current) SDL_Delay((Uint32)std::chrono::duration_cast<std::chrono::milliseconds>(nextTick-current).count());
         else nextTick=current;
         if(++polls%150==0)printf("GAME_BOOT_HEARTBEAT=%u CORE_STATE=%d CHUNKS=%u PRESENTED=%u\n",polls,re4ipc_state(),processed,presented);
       }
+      r36s_crash::mark("report_stats",processed,last);
       reportStats(renderer);
       re4ipc_gx_detach();
       unsigned a=0,b=0,c=0,d=0;
@@ -259,6 +292,7 @@ int main(int argc,char**argv) {
       if(!result) puts("RESULT=GAME_BOOT_RENDERED_FRAMES_PLAYABILITY_UNVERIFIED");
       else puts("RESULT=GAME_BOOT_NEEDS_INVESTIGATION");
       memory("END");
+      r36s_crash::mark("renderer_release",processed,last);
       renderer.Release();
     }
   }catch(const std::exception& e){
@@ -269,11 +303,14 @@ int main(int argc,char**argv) {
   // The probe exits when START is pressed, but shutdown also closes its socket.
   pad={};
   re4ipc_pad(&pad);
+  r36s_crash::mark("ipc_shutdown",0,0);
   re4ipc::shutdown(5000);
   if(joy)SDL_GameControllerClose(joy);
+  r36s_crash::mark("egl_cleanup",0,0);
   SDL_GL_DeleteContext(context);
   SDL_DestroyWindow(window);
   SDL_Quit();
   printf("EXIT_CODE=%d\n",result);
+  r36s_crash::mark("exit",0,0);
   return result;
 }
