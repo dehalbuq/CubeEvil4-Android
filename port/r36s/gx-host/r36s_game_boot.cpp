@@ -272,6 +272,10 @@ int main(int argc,char**argv) {
 #if defined(RE4_R36S_PROFILE)
       StageMeter gxRunMeter,presentMeter,finishMeter,swapMeter;
       unsigned previousAttributeSetups=0, previousDrawCalls=0;
+#ifdef RE4_GX_DEEP_PROFILE
+      re4gx::GxStats previousDeepStats{};
+      puts("DEEP_GX_PROFILE=1 TIME_WALL_CLOCK_DRIVER_WAIT_INCLUDED");
+#endif
       puts("PROFILER_ENABLED=1 STAGE_TIMING=CPU_WALL_CLOCK_MS_INCLUDING_DRIVER_WAIT");
       puts("PROFILER_NOTE=GL_FINISH_TIME_INCLUDES_GPU_WAIT_NOT_PURE_CPU");
 #endif
@@ -419,6 +423,25 @@ int main(int argc,char**argv) {
               stat.uniformUploads,stat.programSwitches,stat.textureBinds,stat.stateChanges);
           previousAttributeSetups=stat.attributeSetups;
           previousDrawCalls=stat.draws;
+#ifdef RE4_GX_DEEP_PROFILE
+          // Deltas in cumulative counters; values are milliseconds per 5s window.
+          const auto ms=[](std::uint64_t current,std::uint64_t previous){
+            return static_cast<double>(current-previous)/1000000.0;
+          };
+          const double upload=ms(stat.profileBufferUploadsNs,previousDeepStats.profileBufferUploadsNs);
+          const double dispatch=ms(stat.profileDispatchNs,previousDeepStats.profileDispatchNs);
+          const double draw=ms(stat.profileDrawNs,previousDeepStats.profileDrawNs);
+          const double texture=ms(stat.profileTextureNs,previousDeepStats.profileTextureNs);
+          const double cleanup=ms(stat.profileCleanupNs,previousDeepStats.profileCleanupNs);
+          const std::uint64_t drawOps=stat.profileDrawCalls-previousDeepStats.profileDrawCalls;
+          const std::uint64_t texOps=stat.profileTextureOps-previousDeepStats.profileTextureOps;
+          printf("DEEP_GX_WINDOW FRAMES=%u UPLOAD_MS=%.2f DISPATCH_MS=%.2f DRAW_MS=%.2f TEX_MS=%.2f CLEANUP_MS=%.2f OTHER_OPS_MS=%.2f DRAW_OPS=%llu TEX_OPS=%llu DRAW_MS_PER_OP=%.3f\n",
+              delta,upload,dispatch,draw,texture,cleanup,
+              std::max(0.0,dispatch-draw-texture),
+              static_cast<unsigned long long>(drawOps),static_cast<unsigned long long>(texOps),
+              drawOps?draw/static_cast<double>(drawOps):0.0);
+          previousDeepStats=stat;
+#endif
           gxRunMeter.clear();presentMeter.clear();finishMeter.clear();swapMeter.clear();
 #endif
           memory("FRONTEND");
