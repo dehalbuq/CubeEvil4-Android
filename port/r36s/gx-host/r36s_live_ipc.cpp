@@ -58,6 +58,9 @@ int main(int argc,char**argv) {
   setenv("RE4_CORE_IPC_CHECK","1",1);
   re4ipc::Spawn spawn;
   spawn.program=coreDir+"/re4_coreproc";
+  // core_ipc_client.cpp deliberately strips inherited LD_LIBRARY_PATH
+  // before execve; explicitly supply the folder containing libre4_*.so.
+  spawn.libraryDir=coreDir;
   spawn.helloSeconds=30;
   re4ipc::configure(spawn);
   memory("START");
