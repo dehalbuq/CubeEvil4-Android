@@ -242,6 +242,16 @@ int main(int argc,char**argv) {
       fprintf(stderr,"GX_INIT_ERROR=%s\n",error.c_str());
       result=8;
     } else {
+#ifdef RE4_R36S_SHADER_CACHE
+      const char* shaderDir=getenv("RE4_R36S_SHADER_CACHE_DIR");
+      GLint binaryFormats=0;
+      glGetIntegerv(GL_NUM_PROGRAM_BINARY_FORMATS,&binaryFormats);
+      bool binaryCacheEnabled=(shaderDir && *shaderDir && renderer.SetProgramCache(shaderDir));
+      printf("SHADER_CACHE_BINARY_FORMATS=%d\n",binaryFormats);
+      printf("SHADER_CACHE_ENABLED=%d\n",binaryCacheEnabled?1:0);
+      printf("SHADER_CACHE_DIR=%s\n",shaderDir && *shaderDir?shaderDir:"(not configured)");
+      puts("SHADER_CACHE_NOTE=first_run_compiles_new_shaders_next_run_can_load_binary_cache");
+#endif
       const auto deadline=Clock::now()+std::chrono::seconds(sec);
       uint32_t last=0;
       auto nextTick=Clock::now();
@@ -356,8 +366,8 @@ int main(int argc,char**argv) {
           const double seconds=std::chrono::duration<double>(timeNow-telemetryStart).count();
           const unsigned delta=processed-lastTelemetryFrames;
           const auto& stat=renderer.Stats();
-          printf("PERFORMANCE_WINDOW_SECONDS=%.2f FRAMES=%u FPS_PRESENTED=%.2f TOTAL_FRAMES=%u DRAWS=%u TRIANGLES=%u SHADERS=%u\n",
-              seconds,delta,seconds>0?delta/seconds:0.0,processed,stat.draws,stat.triangles,stat.programs);
+          printf("PERFORMANCE_WINDOW_SECONDS=%.2f FRAMES=%u FPS_PRESENTED=%.2f TOTAL_FRAMES=%u DRAWS=%u TRIANGLES=%u SHADERS=%u SHADER_CACHE_HITS=%u\n",
+              seconds,delta,seconds>0?delta/seconds:0.0,processed,stat.draws,stat.triangles,stat.programs,stat.programsLoaded);
           memory("FRONTEND");
           coreMemory(corePid);
           lastTelemetryFrames=processed;
@@ -368,6 +378,12 @@ int main(int argc,char**argv) {
       printf("SESSION_STOP_REASON=%s\n",userQuit?"user_exit":result?"error":"time_or_frame_limit");
       r36s_crash::mark("report_stats",processed,last);
       reportStats(renderer);
+#ifdef RE4_R36S_SHADER_CACHE
+      printf("SHADER_CACHE_FINAL_PROGRAMS=%u\n",renderer.Stats().programs);
+      printf("SHADER_CACHE_FINAL_HITS=%u\n",renderer.Stats().programsLoaded);
+      printf("SHADER_CACHE_FINAL_MISSES_OR_UNSUPPORTED=%u\n",
+        renderer.Stats().programs-renderer.Stats().programsLoaded);
+#endif
       re4ipc_gx_detach();
       unsigned a=0,b=0,c=0,d=0;
       re4ipc::checkCounts(&a,&b,&c,&d);
