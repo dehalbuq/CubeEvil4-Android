@@ -6,8 +6,12 @@ HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 1
 CORE="$HERE/cubeevil4_live_gx"
 DATA="$CORE/data"
 OPT_BASEVERTEX="${RE4_R36S_BASEVERTEX:-0}"
+GPU_PROBES="${RE4_R36S_GPU_PROBES:-1}"
+case "$GPU_PROBES" in 0|1) ;; *) echo "RE4_R36S_GPU_PROBES must be 0 or 1"; exit 2;; esac
 case "$OPT_BASEVERTEX" in 0|1) ;; *) echo "RE4_R36S_BASEVERTEX must be 0 or 1"; exit 2;; esac
-if [ "$OPT_BASEVERTEX" = "1" ]; then
+if [ "$GPU_PROBES" = "0" ]; then
+  LOG="$CORE/diagnostico_gx_sem_probes_darkos.txt"
+elif [ "$OPT_BASEVERTEX" = "1" ]; then
   LOG="$CORE/diagnostico_gx_profundo_basevertex_darkos.txt"
 else
   LOG="$CORE/diagnostico_gx_profundo_darkos.txt"
@@ -26,6 +30,7 @@ free -m
 echo "DEEP_PROFILE_DURATION_SECONDS=$SECONDS"
 echo "DEEP_PROFILE_MODE=5_GL_FINISH_VSYNC1"
 echo "BASEVERTEX_EXPERIMENT=$OPT_BASEVERTEX"
+echo "GPU_DIAGNOSTIC_PROBES=$GPU_PROBES"
 for entry in r36s_game_deep_profile re4_coreproc libre4_main.so libre4_host.so libre4_platform.so; do
   if [ ! -f "$CORE/$entry" ]; then echo "MISSING_FILE=$entry"; exit 127; fi
 done
@@ -37,6 +42,7 @@ chmod +x "$CORE/r36s_game_deep_profile" "$CORE/re4_coreproc" 2>/dev/null || :
 export SDL_VIDEODRIVER=kmsdrm
 export SDL_VIDEO_EGL_DRIVER=libEGL.so
 export RE4_GX_BASEVERTEX="$OPT_BASEVERTEX"
+export RE4_GX_GPU_PROBES="$GPU_PROBES"
 export RE4_R36S_SWAP_MODE=5
 export LD_LIBRARY_PATH="$CORE${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 cd "$CORE" || exit 2
