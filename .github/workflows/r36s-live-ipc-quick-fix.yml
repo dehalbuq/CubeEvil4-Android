@@ -1,0 +1,44 @@
+name: R36S - quick IPC library path fix
+
+on:
+  push:
+    branches:
+      - chatgpt/r36s-live-core-gx-ipc
+    paths:
+      - "port/r36s/gx-host/r36s_live_ipc.cpp"
+      - "port/r36s/gx-host/CMakeLists.txt"
+      - ".github/workflows/r36s-live-ipc-quick-fix.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  frontend-fix:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install SDL2 and GLES build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y cmake ninja-build g++ pkg-config libsdl2-dev libgles-dev
+      - name: Compile fixed Linux ARM64 frontend
+        run: |
+          set -eux
+          cmake -S port/r36s/gx-host -B port/build/r36s-gx-host -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build port/build/r36s-gx-host --target r36s_live_ipc --parallel 2
+          file port/build/r36s-gx-host/r36s_live_ipc
+      - name: Assemble drop-in fix over previous Ports installation
+        run: |
+          set -euo pipefail
+          mkdir -p dist/cubeevil4_live_gx
+          cp port/build/r36s-gx-host/r36s_live_ipc dist/cubeevil4_live_gx/
+          chmod +x dist/cubeevil4_live_gx/r36s_live_ipc
+          printf "%s\n" "Overlay the cubeevil4_live_gx directory from this ZIP onto your existing /roms/ports folder. Replace only r36s_live_ipc, keeping the original libre4_*.so, re4_coreproc and modules. Then execute RE4-Core-GX-Ao-Vivo.sh again." > dist/LEIA-ME-CORRECAO.txt
+      - name: Upload corrected frontend only
+        uses: actions/upload-artifact@v4
+        with:
+          name: CubeEvil4-R36S-Live-Core-GX-Correcao-Bibliotecas
+          path: dist/
+          retention-days: 14
