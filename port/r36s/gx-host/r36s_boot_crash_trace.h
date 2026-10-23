@@ -5,6 +5,7 @@
 #ifndef R36S_BOOT_CRASH_TRACE_H
 #define R36S_BOOT_CRASH_TRACE_H
 #include <signal.h>
+#include <initializer_list>
 #include <stdint.h>
 #include <string.h>
 #include <unistd.h>
