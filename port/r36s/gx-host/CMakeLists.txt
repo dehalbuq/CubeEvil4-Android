@@ -78,3 +78,35 @@ target_compile_definitions(r36s_game_ps2 PRIVATE RE4_R36S_LOW_SPEC=1 RE4_R36S_SH
 target_compile_options(r36s_game_ps2 PRIVATE -O2 -Wall -Wextra -ffp-contract=off -g -fno-omit-frame-pointer)
 target_link_libraries(r36s_game_ps2 PRIVATE PkgConfig::SDL2 "${GLESV2_LIB}" dl pthread)
 target_link_options(r36s_game_ps2 PRIVATE -rdynamic -Wl,--build-id)
+
+# Device-specific builds. GCC on GitHub's native AArch64 runner uses
+# Cortex-A35 scheduling/instructions and cross-TU link-time optimization.
+# No fast-math: RE4 GX depends on stable floating-point and shader state.
+# The existing r36s_game_boot and r36s_game_ps2 are left intact.
+set(RE4_R36S_A35_SOURCES
+  r36s_game_boot.cpp
+  "${RE4_ANDROID_CPP}/gx_gl.cpp"
+  "${RE4_ANDROID_CPP}/gx_gl_shader.cpp"
+  "${RE4_ANDROID_CPP}/gx_texture.cpp"
+  "${RE4_WHOLE_RUNTIME}/core_ipc.cpp"
+  "${RE4_WHOLE_RUNTIME}/core_ipc_client.cpp"
+)
+function(re4_a35_target target half_efb)
+  add_executable(${target} ${RE4_R36S_A35_SOURCES})
+  target_include_directories(${target} PRIVATE "${RE4_ANDROID_CPP}" "${RE4_WHOLE_RUNTIME}")
+  target_compile_definitions(${target} PRIVATE RE4_R36S_LOW_SPEC=1 RE4_R36S_SHADER_CACHE=1 RE4_R36S_A35_TARGET=1)
+  if(half_efb)
+    target_compile_definitions(${target} PRIVATE RE4_R36S_HALF_EFB=1)
+  endif()
+  target_compile_options(${target} PRIVATE
+    -O3 -mcpu=cortex-a35 -mtune=cortex-a35 -flto=auto
+    -ffp-contract=off -fno-omit-frame-pointer
+    -ffunction-sections -fdata-sections -Wall -Wextra
+  )
+  target_link_libraries(${target} PRIVATE PkgConfig::SDL2 "${GLESV2_LIB}" dl pthread)
+  target_link_options(${target} PRIVATE
+    -flto=auto -Wl,--gc-sections -rdynamic -Wl,--build-id
+  )
+endfunction()
+re4_a35_target(r36s_game_a35_full FALSE)
+re4_a35_target(r36s_game_a35_half TRUE)
