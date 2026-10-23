@@ -1,8 +1,8 @@
-name: R36S - Resident Evil 4 PS2 inspired low-spec GX
+name: R36S - Resident Evil 4 PS2 corrected safe low-spec
 on:
   push:
     branches:
-      - chatgpt/r36s-ps2-lowspec-renderer
+      - chatgpt/r36s-ps2-safe-ultra-fix
     paths:
       - "port/r36s/gx-host/**"
       - "port/android-decomp/app/src/main/cpp/gx_gl.cpp"
@@ -44,6 +44,6 @@ jobs:
       - name: Publish ARM64 PS2-inspired experimental graphics package
         uses: actions/upload-artifact@v4
         with:
-          name: CubeEvil4-R36S-PS2-LowSpec-ARM64
+          name: CubeEvil4-R36S-PS2-LowSpec-Corrigido-ARM64
           path: dist/
           retention-days: 14
