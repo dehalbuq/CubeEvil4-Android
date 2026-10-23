@@ -5,9 +5,12 @@ HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 1
 CORE="$HERE/cubeevil4_live_gx"
 DATA="$CORE/data"
 LOG="$CORE/diagnostico_primeiro_boot_darkos.txt"
-MODE="${RE4_R36S_SWAP_MODE:-2}"
-case "$MODE" in 0|1|2|3|4) ;; *) echo "Invalid RE4_R36S_SWAP_MODE: $MODE"; exit 2;; esac
+MODE="${RE4_R36S_SWAP_MODE:-5}"
+case "$MODE" in 0|1|2|3|4|5) ;; *) echo "Invalid RE4_R36S_SWAP_MODE: $MODE"; exit 2;; esac
 export RE4_R36S_SWAP_MODE="$MODE"
+SECONDS="${RE4_R36S_SECONDS:-180}"
+case "$SECONDS" in *[!0-9]*|"") echo "RE4_R36S_SECONDS must be a number 5..600"; exit 2;; esac
+if [ "$SECONDS" -lt 5 ] || [ "$SECONDS" -gt 600 ]; then echo "RE4_R36S_SECONDS must be 5..600"; exit 2; fi
 mkdir -p "$CORE" || exit 1
 (
 echo "==== CubeEvil4 / R36S experimental first game-data boot ===="
@@ -16,6 +19,7 @@ uname -a
 free -m
 echo "DATA=$DATA"
 echo "SWAP_DIAG_MODE=$MODE"
+echo "SESSION_SECONDS=$SECONDS"
 if [ ! -f "$CORE/r36s_game_boot" ]; then
   echo "ERROR=BOOT_EXECUTABLE_MISSING"
   exit 127
@@ -36,8 +40,9 @@ export SDL_VIDEO_EGL_DRIVER=libEGL.so
 export RE4_GX_BASEVERTEX=0
 export LD_LIBRARY_PATH="$CORE${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 cd "$CORE" || exit 2
-echo "RUNNING_REAL_GAME_BOOT_FOR_MAX_45_SECONDS"
-./r36s_game_boot "$CORE" "$CORE/modules" "$DATA" 45
+echo "RUNNING_REAL_GAME_BOOT_FOR_MAX_${SECONDS}_SECONDS"
+echo "EXIT_COMBO=HOLD_SELECT_AND_START_FOR_2_SECONDS"
+./r36s_game_boot "$CORE" "$CORE/modules" "$DATA" "$SECONDS"
 status=$?
 echo "TEST_EXIT_CODE=$status"
 exit "$status"
