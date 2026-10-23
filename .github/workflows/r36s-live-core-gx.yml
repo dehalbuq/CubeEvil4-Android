@@ -1,0 +1,119 @@
+name: R36S - live original core to GX (AArch64)
+
+on:
+  push:
+    branches:
+      - chatgpt/r36s-live-core-gx-ipc
+    paths:
+      - "port/whole/**"
+      - "port/r36s/gx-host/**"
+      - ".github/workflows/r36s-live-core-gx.yml"
+  pull_request:
+    paths:
+      - "port/whole/**"
+      - "port/r36s/gx-host/**"
+      - ".github/workflows/r36s-live-core-gx.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  graphics:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install graphics development libraries
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y cmake ninja-build g++ pkg-config libsdl2-dev libgles-dev
+      - name: Compile live SDL2 frontend using original GX renderer and IPC client
+        run: |
+          cmake -S port/r36s/gx-host -B port/build/r36s-gx-host -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build port/build/r36s-gx-host --target r36s_live_ipc --parallel 2
+          file port/build/r36s-gx-host/r36s_live_ipc
+          readelf -h port/build/r36s-gx-host/r36s_live_ipc | grep -E "Class:|Machine:"
+      - name: Upload frontend
+        uses: actions/upload-artifact@v4
+        with:
+          name: r36s-frontend-live-ipc
+          path: port/build/r36s-gx-host/r36s_live_ipc
+          retention-days: 14
+
+  core:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      RE4_JOBS: "2"
+      RE4_OPT: "2"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install official core AArch64 cross-compilation prerequisites
+        run: |
+          sudo bash port/tools/whole_setup_linux.sh
+      - name: Build upstream AArch64 core, IPC process and QEMU tests
+        shell: bash
+        run: |
+          set -o pipefail
+          bash port/tools/whole_build.sh aarch64 2>&1 | tee core-aarch64-ci.log
+      - name: Collect compiled AArch64 core and diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set -u
+          BUILD="port/build/whole-aarch64-O2"
+          mkdir -p output/modules output/logs
+          cp core-aarch64-ci.log output/logs/ 2>/dev/null || true
+          cp "$BUILD.log" output/logs/ 2>/dev/null || true
+          for f in re4_host re4_coreproc libre4_main.so libre4_host.so libre4_platform.so; do
+            if [ -f "$BUILD/$f" ]; then cp "$BUILD/$f" output/; fi
+          done
+          find "$BUILD/modules" -maxdepth 1 -type f -name "libre4_*.so" -exec cp {} output/modules/ \; 2>/dev/null || true
+          ls -lh output/ | head -20
+      - name: Upload ARM64 core even when tests fail
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: r36s-core-ipc-aarch64-and-logs
+          path: output/
+          retention-days: 14
+
+  package:
+    needs: [graphics, core]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Retrieve compiled frontend
+        uses: actions/download-artifact@v4
+        with:
+          name: r36s-frontend-live-ipc
+          path: frontend
+      - name: Retrieve compiled core
+        uses: actions/download-artifact@v4
+        with:
+          name: r36s-core-ipc-aarch64-and-logs
+          path: core
+      - name: Assemble PortMaster-style install layout
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/cubeevil4_live_gx/modules
+          cp frontend/r36s_live_ipc dist/cubeevil4_live_gx/
+          for f in re4_coreproc libre4_main.so libre4_host.so libre4_platform.so; do
+            test -s "core/$f"
+            cp "core/$f" dist/cubeevil4_live_gx/
+          done
+          find core/modules -type f -name "libre4_*.so" -exec cp {} dist/cubeevil4_live_gx/modules/ \;
+          test "$(find dist/cubeevil4_live_gx/modules -name "libre4_*.so" | wc -l)" -ge 114
+          cp port/r36s/gx-host/RE4-Core-GX-Ao-Vivo.sh dist/
+          cp port/r36s/gx-host/README-LIVE-IPC.md dist/cubeevil4_live_gx/README.md
+          chmod +x dist/RE4-Core-GX-Ao-Vivo.sh dist/cubeevil4_live_gx/r36s_live_ipc dist/cubeevil4_live_gx/re4_coreproc
+          file dist/cubeevil4_live_gx/r36s_live_ipc dist/cubeevil4_live_gx/re4_coreproc
+      - name: Publish ready-to-extract R36S package
+        uses: actions/upload-artifact@v4
+        with:
+          name: CubeEvil4-R36S-Live-Core-GX
+          path: dist/
+          retention-days: 14
