@@ -2481,12 +2481,26 @@ bool GxRenderer::Init(int scale, std::string *error) {
   m.lowSpecSkipFog = flag("RE4_R36S_SKIP_FOG");
   if (const char* lights = std::getenv("RE4_R36S_LIGHTS_MAX")) {
     const int parsed = std::atoi(lights);
-    if (parsed >= 0 && parsed <= 8) m.lowSpecLightLimit = parsed;
+    // Never produce a 0-light shader from a low-spec preset. Many materials
+    // use black ambient and depend entirely on their dynamic light channel.
+    if (parsed >= 1 && parsed <= 8) m.lowSpecLightLimit = parsed;
+    if (parsed == 0) {
+      m.lowSpecLightLimit = 2;
+      GXLOG("R36S_LOWSPEC_WARNING: 0 lights refused, forced 2; previous Ultra caused black objects");
+    }
   }
-  if (const char* distance = std::getenv("RE4_R36S_FAR_Z")) {
-    const float parsed = std::strtof(distance, nullptr);
-    if (std::isfinite(parsed) && parsed >= 0.0f && parsed <= 10000.0f)
-      m.lowSpecFarZ = parsed;
+  // The previous camera-space cutoff discarded more than half the scene's
+  // draw calls on real R36S hardware, removing lighting targets and geometry.
+  // Keep that heuristic strictly opt-in for controlled developer experiments.
+  if (flag("RE4_R36S_UNSAFE_FAR_CULL")) {
+    if (const char* distance = std::getenv("RE4_R36S_FAR_Z")) {
+      const float parsed = std::strtof(distance, nullptr);
+      if (std::isfinite(parsed) && parsed > 0.0f && parsed <= 10000.0f)
+        m.lowSpecFarZ = parsed;
+    }
+  } else if (const char* distance = std::getenv("RE4_R36S_FAR_Z")) {
+    if (std::strtof(distance, nullptr) > 0.0f)
+      GXLOG("R36S_LOWSPEC_WARNING: unsafe far-distance cull refused; set RE4_R36S_UNSAFE_FAR_CULL=1 only for debugging");
   }
   GXLOG("R36S_LOWSPEC skip_dof=%d light_limit=%d skip_fog=%d camera_far_z=%.1f",
         m.lowSpecSkipDof?1:0,m.lowSpecLightLimit,m.lowSpecSkipFog?1:0,m.lowSpecFarZ);
