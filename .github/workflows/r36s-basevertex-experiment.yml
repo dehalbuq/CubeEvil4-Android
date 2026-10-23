@@ -1,0 +1,47 @@
+name: R36S - optional Mali BaseVertex performance experiment
+
+on:
+  push:
+    branches:
+      - chatgpt/r36s-basevertex-optimization-test
+    paths:
+      - "port/r36s/gx-host/**"
+      - ".github/workflows/r36s-basevertex-experiment.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  basevertex-test-arm64:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install SDL2 GLES3 development dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y cmake ninja-build g++ pkg-config libsdl2-dev libgles-dev
+      - name: Compile ARM64 profiler with BaseVertex toggle and attribute counters
+        run: |
+          set -eux
+          cmake -S port/r36s/gx-host -B port/build/r36s-gx-host -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake --build port/build/r36s-gx-host --target r36s_game_profile --parallel 2
+          file port/build/r36s-gx-host/r36s_game_profile
+          readelf -h port/build/r36s-gx-host/r36s_game_profile | grep -E "Class:|Machine:"
+          test -s port/build/r36s-gx-host/r36s_game_profile
+      - name: Package safe opt-in overlay only
+        run: |
+          set -euo pipefail
+          mkdir -p dist/cubeevil4_live_gx
+          cp port/build/r36s-gx-host/r36s_game_profile dist/cubeevil4_live_gx/
+          cp port/r36s/gx-host/RE4-R36S-Perfil-GPU.sh dist/
+          cp port/r36s/gx-host/RE4-R36S-Teste-BaseVertex.sh dist/
+          cp port/r36s/gx-host/README-BASEVERTEX-R36S.md dist/LEIA-ME-BASEVERTEX.md
+          chmod +x dist/cubeevil4_live_gx/r36s_game_profile dist/*.sh
+      - name: Upload test package
+        uses: actions/upload-artifact@v4
+        with:
+          name: CubeEvil4-R36S-BaseVertex-Experimento-ARM64
+          path: dist/
+          retention-days: 14
