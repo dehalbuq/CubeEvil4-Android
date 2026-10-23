@@ -1,0 +1,51 @@
+name: R36S DarkOSRE - native CubeEvil4 GX renderer
+
+on:
+  push:
+    branches:
+      - chatgpt/r36s-gx-renderer-native
+    paths:
+      - "port/r36s/gx-host/**"
+      - ".github/workflows/r36s-gx-renderer.yml"
+  pull_request:
+    paths:
+      - "port/r36s/gx-host/**"
+      - ".github/workflows/r36s-gx-renderer.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build native Linux AArch64 GX renderer
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install SDL2 and GLES3 build requirements
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y cmake ninja-build g++ pkg-config libsdl2-dev libgles-dev
+      - name: Compile CubeEvil4's existing original GX renderer
+        run: |
+          cmake -S port/r36s/gx-host -B port/build/r36s-gx-host -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build port/build/r36s-gx-host --parallel 2
+          file port/build/r36s-gx-host/r36s_gx_host
+          readelf -h port/build/r36s-gx-host/r36s_gx_host | grep -E 'Class:|Machine:'
+          ldd port/build/r36s-gx-host/r36s_gx_host
+      - name: Assemble package for /roms/ports
+        if: success()
+        run: |
+          mkdir -p dist/cubeevil4_gx_host
+          cp port/build/r36s-gx-host/r36s_gx_host dist/cubeevil4_gx_host/
+          cp port/r36s/gx-host/RE4-GX-Renderer-Test.sh dist/
+          cp port/r36s/gx-host/README.md dist/cubeevil4_gx_host/
+          chmod +x dist/cubeevil4_gx_host/r36s_gx_host dist/RE4-GX-Renderer-Test.sh
+      - name: Publish R36S GX renderer test package
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: CubeEvil4-R36S-GX-Renderer-ARM64
+          path: dist/
+          retention-days: 14
