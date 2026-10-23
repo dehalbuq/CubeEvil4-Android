@@ -128,6 +128,10 @@ void reportStats(const re4gx::GxRenderer& r){
           s.chunks,s.draws,s.triangles,s.programs,s.shaderErrors);
   printf("GX_TEXTURES=%u COPIES=%u PRESENTS=%u RESETS=%u\n",
           s.textures,s.displayCopies,s.presents,s.resets);
+#ifdef RE4_R36S_LOW_SPEC
+  printf("LOW_SPEC_CULLED_DRAWS=%u CULLED_TRIANGLES=%u DOF_PASSES_SKIPPED=%u\n",
+    s.culledFarDraws,s.culledFarTriangles,s.skippedAutofocus);
+#endif
 }
 } // namespace
 
@@ -150,6 +154,15 @@ int main(int argc,char**argv) {
   int sec=argc>4?atoi(argv[4]):180;
   sec=std::max(5,std::min(sec,600));
   printf("RUN_MODE=GAME_BOOT MAX_SECONDS=%d\n",sec);
+#ifdef RE4_R36S_LOW_SPEC
+  printf("LOW_SPEC_ENABLED=1\n");
+  printf("LOW_SPEC_LIGHTS_MAX=%s\n",
+    getenv("RE4_R36S_LIGHTS_MAX")?getenv("RE4_R36S_LIGHTS_MAX"):"8");
+  printf("LOW_SPEC_SKIP_DOF=%s SKIP_FOG=%s FAR_Z=%s\n",
+    getenv("RE4_R36S_SKIP_DOF")?getenv("RE4_R36S_SKIP_DOF"):"0",
+    getenv("RE4_R36S_SKIP_FOG")?getenv("RE4_R36S_SKIP_FOG"):"0",
+    getenv("RE4_R36S_FAR_Z")?getenv("RE4_R36S_FAR_Z"):"0");
+#endif
   const char* envMode=getenv("RE4_R36S_SWAP_MODE");
   int swapMode=envMode?atoi(envMode):5;
   if(swapMode<0 || swapMode>5){
@@ -259,6 +272,9 @@ int main(int argc,char**argv) {
       auto telemetryStart=Clock::now();
       auto quitHeldAt=Clock::time_point{};
       unsigned lastTelemetryFrames=0;
+#ifdef RE4_R36S_LOW_SPEC
+      unsigned lastCulledFarDraws=0,lastDofSkipped=0;
+#endif
       unsigned polls=0;
       bool userQuit=false;
       printf("SAFE_EXIT=ESC_OR_SDL_QUIT_OR_HOLD_SELECT_PLUS_START_2_SECONDS\n");
@@ -368,6 +384,13 @@ int main(int argc,char**argv) {
           const auto& stat=renderer.Stats();
           printf("PERFORMANCE_WINDOW_SECONDS=%.2f FRAMES=%u FPS_PRESENTED=%.2f TOTAL_FRAMES=%u DRAWS=%u TRIANGLES=%u SHADERS=%u SHADER_CACHE_HITS=%u\n",
               seconds,delta,seconds>0?delta/seconds:0.0,processed,stat.draws,stat.triangles,stat.programs,stat.programsLoaded);
+#ifdef RE4_R36S_LOW_SPEC
+          printf("LOW_SPEC_WINDOW DRAWS_CULLED=%u CULLED_TOTAL=%u DOF_SKIPPED=%u DOF_TOTAL=%u\n",
+            stat.culledFarDraws-lastCulledFarDraws,stat.culledFarDraws,
+            stat.skippedAutofocus-lastDofSkipped,stat.skippedAutofocus);
+          lastCulledFarDraws=stat.culledFarDraws;
+          lastDofSkipped=stat.skippedAutofocus;
+#endif
           memory("FRONTEND");
           coreMemory(corePid);
           lastTelemetryFrames=processed;
