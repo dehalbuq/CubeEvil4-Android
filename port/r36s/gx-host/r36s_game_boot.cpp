@@ -300,6 +300,11 @@ int main(int argc,char**argv) {
       auto telemetryStart=Clock::now();
       auto quitHeldAt=Clock::time_point{};
       unsigned lastTelemetryFrames=0;
+#ifdef RE4_R36S_STATE_DEDUP
+      unsigned skippedDisplayClears=0;
+      unsigned prevBpSkip=0,prevXfSkip=0;
+      puts("FASTSTATE_ENABLED=1 OPTS=SKIP_DUP_BP_XF_AND_REDUNDANT_SCREEN_CLEAR");
+#endif
 #ifdef RE4_R36S_LOW_SPEC
       unsigned lastCulledFarDraws=0,lastDofSkipped=0;
 #endif
@@ -359,8 +364,21 @@ int main(int argc,char**argv) {
           if(processed<40 || processed%10==0)puts("TRACE_RENDER_RUN_OK=1");
           glBindFramebuffer(GL_FRAMEBUFFER,0);
           glViewport(0,0,kW,kH);
+#ifdef RE4_R36S_STATE_DEDUP
+          // Present draws a full-screen quad with blending and scissor disabled
+          // (or clears the screen itself in VI black mode). If an XFB exists,
+          // clearing the default framebuffer immediately before it is fully
+          // overwritten is wasted GPU bandwidth on Mali-G31.
+          if(renderer.Xfb(nullptr,nullptr)==0) {
+            glClearColor(0,0,0,1);
+            glClear(GL_COLOR_BUFFER_BIT);
+          } else {
+            skippedDisplayClears++;
+          }
+#else
           glClearColor(0,0,0,1);
           glClear(GL_COLOR_BUFFER_BIT);
+#endif
           r36s_crash::mark("renderer_Present",processed+1,last);
           if(renderer.Present(0,0,kW,kH))presented++;
           r36s_crash::mark("renderer_Present_return",processed+1,last);
@@ -419,6 +437,13 @@ int main(int argc,char**argv) {
           lastCulledFarDraws=stat.culledFarDraws;
           lastDofSkipped=stat.skippedAutofocus;
 #endif
+#ifdef RE4_R36S_STATE_DEDUP
+          printf("FASTSTATE_WINDOW FRAMES=%u BP_EQUAL_SKIPPED=%u XF_EQUAL_SKIPPED=%u BP_ACTION_PRESERVED=%u OUTPUT_CLEARS_SKIPPED=%u\n",
+              delta,stat.bpUnchangedSkipped-prevBpSkip,stat.xfUnchangedSkipped-prevXfSkip,
+              stat.bpActionPreserved,skippedDisplayClears);
+          prevBpSkip=stat.bpUnchangedSkipped;
+          prevXfSkip=stat.xfUnchangedSkipped;
+#endif
           memory("FRONTEND");
           coreMemory(corePid);
 #ifdef RE4_R36S_SCALABLE_EFB
@@ -432,6 +457,11 @@ int main(int argc,char**argv) {
       printf("SESSION_STOP_REASON=%s\n",userQuit?"user_exit":result?"error":"time_or_frame_limit");
       r36s_crash::mark("report_stats",processed,last);
       reportStats(renderer);
+#ifdef RE4_R36S_STATE_DEDUP
+      printf("FASTSTATE_FINAL BP_EQUAL_SKIPPED=%u XF_EQUAL_SKIPPED=%u BP_ACTION_PRESERVED=%u OUTPUT_CLEARS_SKIPPED=%u\n",
+             renderer.Stats().bpUnchangedSkipped,renderer.Stats().xfUnchangedSkipped,
+             renderer.Stats().bpActionPreserved,skippedDisplayClears);
+#endif
 #ifdef RE4_R36S_SHADER_CACHE
       printf("SHADER_CACHE_FINAL_PROGRAMS=%u\n",renderer.Stats().programs);
       printf("SHADER_CACHE_FINAL_HITS=%u\n",renderer.Stats().programsLoaded);

@@ -658,6 +658,20 @@ struct GxRenderer::Impl {
   void BpWrite(std::uint32_t word, bool action) {
     const unsigned reg = word >> 24;
     const std::uint32_t value = word & 0xFFFFFF;
+#ifdef RE4_R36S_STATE_DEDUP
+    // A BP_STATE packet may replay the same 256 register values every GX
+    // chunk. Identical ordinary writes cannot change GL-visible state.
+    // IMPORTANT: action writes for EFB copy (0x52) and autofocus (0x5A)
+    // have side effects even when the stored register value is identical.
+    if (bp[reg] == value) {
+      if (action && (reg == 0x52 || reg == 0x5A)) {
+        stats.bpActionPreserved++;
+      } else {
+        stats.bpUnchangedSkipped++;
+        return;
+      }
+    }
+#endif
     if (bp[reg] != value || !action) {
       // registers the generated shader depends on (MakeKey)
       if (reg == 0x00 || (reg >= 0x10 && reg <= 0x1F) || (reg >= 0x27 && reg <= 0x2F) ||
@@ -718,10 +732,22 @@ struct GxRenderer::Impl {
     for (std::uint32_t i = 0; i < n; i++) {
       const std::uint32_t a = address + i;
       if (a < 0x800) {
+#ifdef RE4_R36S_STATE_DEDUP
+        if (xfMem[a] == words[i]) {
+          stats.xfUnchangedSkipped++;
+          continue;
+        }
+#endif
         xfMem[a] = words[i];
         XfMemToBlock(a);
       } else if (a >= 0x1000 && a < 0x1058) {
         const std::uint32_t r = a - 0x1000;
+#ifdef RE4_R36S_STATE_DEDUP
+        if (xfReg[r] == words[i]) {
+          stats.xfUnchangedSkipped++;
+          continue;
+        }
+#endif
         xfReg[r] = words[i];
         if (r == 0x09 || (r >= 0x0E && r <= 0x12) || r == 0x26 || r >= 0x3F)
           keyDirty = true;

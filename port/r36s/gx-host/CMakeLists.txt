@@ -114,3 +114,10 @@ re4_a35_target(r36s_game_a35_half TRUE)
 # scales; existing A35 half/full binaries are NOT touched.
 re4_a35_target(r36s_game_a35_scalable TRUE)
 target_compile_definitions(r36s_game_a35_scalable PRIVATE RE4_R36S_SCALABLE_EFB=1)
+# Experimental optimized variant. Same quality/resolution and A35 compiler
+# as r36s_game_a35_scalable (control), only BP/XF state dedup and redundant
+# screen-clear skip differ. Never replaces the proven r36s_game_boot.
+re4_a35_target(r36s_game_a35_faststate TRUE)
+target_compile_definitions(r36s_game_a35_faststate PRIVATE
+  RE4_R36S_SCALABLE_EFB=1 RE4_R36S_STATE_DEDUP=1
+)

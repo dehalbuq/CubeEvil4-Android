@@ -61,6 +61,13 @@ struct GxStats {
   unsigned long long behindSum = 0;
   unsigned behindChecks = 0;
   unsigned behindCount[9] = {};
+#ifdef RE4_R36S_STATE_DEDUP
+  // Only on the isolated Cortex-A35 state-dedup experiment:
+  // counts redundant register write operations skipped, not objects hidden.
+  unsigned bpUnchangedSkipped = 0;
+  unsigned xfUnchangedSkipped = 0;
+  unsigned bpActionPreserved = 0;
+#endif
 #ifdef RE4_R36S_LOW_SPEC
   // Opt-in visual quality reductions for the Mali-G31; never used by stable app.
   unsigned culledFarDraws = 0;
