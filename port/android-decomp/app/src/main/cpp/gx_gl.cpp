@@ -2481,10 +2481,23 @@ bool GxRenderer::Init(int scale, std::string *error) {
 #ifdef RE4_R36S_HALF_EFB
   m.scale = 1.0f;
   // Explicit opt-in; never apply lower resolution to the stable renderer.
+#ifdef RE4_R36S_SCALABLE_EFB
+  // Fixed experimentally selected dimensions, avoiding arbitrary nonintegral
+  // EFB sizes, driver reallocations and incompatible resizes during a frame.
+  // 0.75 -> 480x396; 0.5 -> 320x264; 0.375 -> 240x198.
+  const char* requested = std::getenv("RE4_R36S_RENDER_SCALE");
+  if (requested && !std::strcmp(requested, "0.75")) m.scale = 0.75f;
+  else if (requested && !std::strcmp(requested, "0.5")) m.scale = 0.5f;
+  else if (requested && !std::strcmp(requested, "0.375")) m.scale = 0.375f;
+  else if (requested && !std::strcmp(requested, "1.0")) m.scale = 1.0f;
+  else GXLOG("R36S_EFB_SCALABLE: invalid or missing scale, default 1.0");
+  GXLOG("R36S_SCALABLE_EFB_SELECTED=%s", requested ? requested : "(unset)");
+#else
   if (const char* half = std::getenv("RE4_R36S_HALF_EFB")) {
     if (*half == '1' && half[1] == '\0') m.scale = 0.5f;
   }
-  GXLOG("R36S_EFB_RENDER_SCALE=%.2f EFB_INTERNAL_SIZE=%dx%d LOGICAL_SIZE=%dx%d",
+#endif
+  GXLOG("R36S_EFB_RENDER_SCALE=%.3f EFB_INTERNAL_SIZE=%dx%d LOGICAL_SIZE=%dx%d",
         static_cast<double>(m.scale),
         static_cast<int>(kEfbWidth * m.scale),static_cast<int>(kEfbHeight * m.scale),
         kEfbWidth,kEfbHeight);
