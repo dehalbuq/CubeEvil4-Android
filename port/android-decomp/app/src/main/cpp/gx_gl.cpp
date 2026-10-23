@@ -5,6 +5,9 @@
 #include "re4_gx_frame.h"
 
 #include <algorithm>
+#ifdef RE4_GX_DEEP_PROFILE
+#include <chrono>
+#endif
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -2552,11 +2555,19 @@ void GxRenderer::Run(const Re4GxChunk &chunk) {
     m.DropTextures();
   }
   // this chunk's vertices and indices
+#ifdef RE4_GX_DEEP_PROFILE
+  using DeepClock = std::chrono::steady_clock;
+  const auto deepUploadStart = DeepClock::now();
+#endif
   glBindVertexArray(m.vao);
   glBindBuffer(GL_ARRAY_BUFFER, m.vbo);
   glBufferData(GL_ARRAY_BUFFER, chunk.vertexBytes ? chunk.vertexBytes : 4, chunk.vertices, GL_STREAM_DRAW);
   glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m.ibo);
   glBufferData(GL_ELEMENT_ARRAY_BUFFER, chunk.indexCount ? chunk.indexCount * 2 : 4, chunk.indices, GL_STREAM_DRAW);
+#ifdef RE4_GX_DEEP_PROFILE
+  m.stats.profileBufferUploadsNs += static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(DeepClock::now() - deepUploadStart).count());
+#endif
   // the app drew the screen since the last chunk: a new pass
   m.efbLeft = true;
   m.BindFbo(m.DrawFbo());
@@ -2579,6 +2590,9 @@ void GxRenderer::Run(const Re4GxChunk &chunk) {
   m.TimerBegin();
   m.current = nullptr;
   std::uint32_t at = 0;
+#ifdef RE4_GX_DEEP_PROFILE
+  const auto deepDispatchStart = DeepClock::now();
+#endif
   while (at < chunk.opWords) {
     const std::uint32_t head = chunk.ops[at];
     const std::uint32_t op = head & 0xFF, n = head >> 8;
@@ -2606,7 +2620,15 @@ void GxRenderer::Run(const Re4GxChunk &chunk) {
       if (n * 4 >= sizeof(Re4GxTexture)) {
         Re4GxTexture t;
         std::memcpy(&t, p, sizeof(t));
+#ifdef RE4_GX_DEEP_PROFILE
+        const auto deepTextureStart = DeepClock::now();
+#endif
         m.BindTexture(t, chunk);
+#ifdef RE4_GX_DEEP_PROFILE
+        m.stats.profileTextureNs += static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(DeepClock::now() - deepTextureStart).count());
+        ++m.stats.profileTextureOps;
+#endif
       }
       break;
     case RE4_GX_OP_FORGET:
@@ -2617,7 +2639,15 @@ void GxRenderer::Run(const Re4GxChunk &chunk) {
       if (n * 4 >= sizeof(Re4GxDraw)) {
         Re4GxDraw d;
         std::memcpy(&d, p, sizeof(d));
+#ifdef RE4_GX_DEEP_PROFILE
+        const auto deepDrawStart = DeepClock::now();
+#endif
         m.Draw(d, chunk);
+#ifdef RE4_GX_DEEP_PROFILE
+        m.stats.profileDrawNs += static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(DeepClock::now() - deepDrawStart).count());
+        ++m.stats.profileDrawCalls;
+#endif
       }
       break;
     default:
@@ -2625,6 +2655,11 @@ void GxRenderer::Run(const Re4GxChunk &chunk) {
     }
     at += 1 + n;
   }
+#ifdef RE4_GX_DEEP_PROFILE
+  m.stats.profileDispatchNs += static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(DeepClock::now() - deepDispatchStart).count());
+  const auto deepCleanupStart = DeepClock::now();
+#endif
   m.TimerEnd();
   m.FenceAfterChunk();
   // leave GL as the app's other renderers expect it
@@ -2636,6 +2671,10 @@ void GxRenderer::Run(const Re4GxChunk &chunk) {
   m.Touched();
   m.SaveAndPlainState();
   m.BindFbo(0);
+#ifdef RE4_GX_DEEP_PROFILE
+  m.stats.profileCleanupNs += static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(DeepClock::now() - deepCleanupStart).count());
+#endif
 }
 
 GLuint GxRenderer::Xfb(unsigned *width, unsigned *height) const {
