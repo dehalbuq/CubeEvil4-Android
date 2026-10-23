@@ -1,0 +1,50 @@
+name: R36S - isolate Mali GLES swap crash
+
+on:
+  push:
+    branches:
+      - chatgpt/r36s-gpu-swap-isolation
+    paths:
+      - "port/r36s/gx-host/**"
+      - ".github/workflows/r36s-gpu-swap-isolation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ARM64 SDL2 and GLES development libraries
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y cmake ninja-build g++ pkg-config libsdl2-dev libgles-dev
+      - name: Build symbolized native ARM64 swap diagnostic
+        run: |
+          set -eux
+          cmake -S port/r36s/gx-host -B port/build/r36s-gx-host -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake --build port/build/r36s-gx-host --target r36s_game_boot --parallel 2
+          file port/build/r36s-gx-host/r36s_game_boot
+          readelf -h port/build/r36s-gx-host/r36s_game_boot | grep -E "Class:|Machine:"
+          readelf -S port/build/r36s-gx-host/r36s_game_boot | grep -E "\.debug_info|\.symtab"
+      - name: Package only updated frontend and scripts (keep original core/data)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/cubeevil4_live_gx
+          cp port/build/r36s-gx-host/r36s_game_boot dist/cubeevil4_live_gx/
+          for f in RE4-Primeiro-Boot.sh RE4-GPU-Sem-VSync.sh RE4-GPU-UBO-Antigo.sh RE4-GPU-Sem-Swap.sh; do
+            cp "port/r36s/gx-host/$f" dist/
+            chmod +x "dist/$f"
+          done
+          cp port/r36s/gx-host/README-GPU-SWAP.md dist/LEIA-ME-GPU-SWAP.md
+          chmod +x dist/cubeevil4_live_gx/r36s_game_boot
+      - name: Publish ARM64 GPU swap diagnostic
+        uses: actions/upload-artifact@v4
+        with:
+          name: CubeEvil4-R36S-GPU-Swap-Isolamento-ARM64
+          path: dist/
+          retention-days: 14

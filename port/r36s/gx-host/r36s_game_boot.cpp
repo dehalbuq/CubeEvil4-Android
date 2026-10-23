@@ -135,6 +135,26 @@ int main(int argc,char**argv) {
   int sec=argc>4?atoi(argv[4]):45;
   sec=std::max(5,std::min(sec,90));
   printf("RUN_MODE=GAME_BOOT MAX_SECONDS=%d\n",sec);
+  const char* envMode=getenv("RE4_R36S_SWAP_MODE");
+  int swapMode=envMode?atoi(envMode):2;
+  if(swapMode<0 || swapMode>4){
+    fprintf(stderr,"SWAP_MODE_INVALID=%d valid 0..4\n",swapMode);
+    return 21;
+  }
+  // Each mode changes only the GL swap / uniform-buffer strategy.
+  // Default mode 2 retains vsync and swaps but avoids Mali persistent UBO mapping.
+  if(swapMode==2)setenv("RE4_GX_PERSISTENT","0",1);
+  if(swapMode==3)setenv("RE4_GX_UNIFORM_STREAM","0",1);
+  printf("GPU_SWAP_DIAG_MODE=%d\n",swapMode);
+  printf("GPU_MODE_DESC=%s\n",
+    swapMode==0?"baseline_vsync1_persistent":
+    swapMode==1?"vsync0_glFinish_before_swap":
+    swapMode==2?"vsync1_no_persistent_uniform_mapping":
+    swapMode==3?"vsync1_legacy_uniform_buffers":
+                "vsync0_glFinish_no_swap_offscreen");
+  printf("RE4_GX_PERSISTENT=%s RE4_GX_UNIFORM_STREAM=%s\n",
+    getenv("RE4_GX_PERSISTENT")?getenv("RE4_GX_PERSISTENT"):"(default)",
+    getenv("RE4_GX_UNIFORM_STREAM")?getenv("RE4_GX_UNIFORM_STREAM"):"(default)");
   // This entry is synthetic and cannot execute original game data.
   unsetenv("RE4_CORE_TEST_ENTRY");
   setenv("RE4_CORE_IPC_CHECK","1",1);
@@ -186,7 +206,10 @@ int main(int argc,char**argv) {
     SDL_DestroyWindow(window);SDL_Quit();re4ipc::shutdown(3000);return 7;
   }
   SDL_GL_MakeCurrent(window,context);
-  SDL_GL_SetSwapInterval(1);
+  const int interval=swapMode==1||swapMode==4?0:1;
+  int intervalRc=SDL_GL_SetSwapInterval(interval);
+  printf("SDL_SWAP_INTERVAL_REQUESTED=%d SET_RC=%d ACTUAL=%d ERR=%s\n",
+    interval,intervalRc,SDL_GL_GetSwapInterval(),intervalRc?SDL_GetError():"none");
   printf("GL_RENDERER=%s\nGL_VERSION=%s\n",glGetString(GL_RENDERER),glGetString(GL_VERSION));
   int result=0;unsigned processed=0,resets=0,presented=0,glErrors=0;
   try {
@@ -255,8 +278,21 @@ int main(int argc,char**argv) {
             if(glErrors<12)printf("CORE_GX_GL_ERROR_FRAME_%u=0x%x\n",processed,e);
             glErrors++;
           }
-          r36s_crash::mark("egl_swap",processed+1,last);
-          SDL_GL_SwapWindow(window);
+          if(swapMode==1 || swapMode==4){
+            r36s_crash::mark("pre_swap_glFinish",processed+1,last);
+            if(processed<30)printf("TRACE_GL_FINISH_BEGIN=%u\n",processed+1);
+            glFinish();
+            if(processed<30)printf("TRACE_GL_FINISH_OK=%u GL_ERROR=0x%x\n",
+                                   processed+1,glGetError());
+          }
+          if(swapMode!=4){
+            r36s_crash::mark("egl_swap",processed+1,last);
+            if(processed<30)printf("TRACE_EGL_SWAP_BEGIN=%u\n",processed+1);
+            SDL_GL_SwapWindow(window);
+            if(processed<30)printf("TRACE_EGL_SWAP_OK=%u\n",processed+1);
+          }else{
+            if(processed==0)puts("WARNING_OFFSCREEN_TEST_NO_SCREEN_UPDATE=YES");
+          }
           r36s_crash::mark("ipc_gx_release",processed+1,last);
           re4ipc_gx_release(c);
           r36s_crash::mark("frame_complete",processed+1,last);
@@ -291,6 +327,8 @@ int main(int argc,char**argv) {
       }
       if(!result) puts("RESULT=GAME_BOOT_RENDERED_FRAMES_PLAYABILITY_UNVERIFIED");
       else puts("RESULT=GAME_BOOT_NEEDS_INVESTIGATION");
+      printf("GPU_TEST_MODE=%d FRAMES=%u PRESENTED_CALLS=%u SWAP_CALLED=%s\n",
+              swapMode,processed,presented,swapMode==4?"NO":"YES");
       memory("END");
       r36s_crash::mark("renderer_release",processed,last);
       renderer.Release();

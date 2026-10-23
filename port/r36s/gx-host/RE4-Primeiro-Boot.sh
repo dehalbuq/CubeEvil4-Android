@@ -5,6 +5,9 @@ HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 1
 CORE="$HERE/cubeevil4_live_gx"
 DATA="$CORE/data"
 LOG="$CORE/diagnostico_primeiro_boot_darkos.txt"
+MODE="${RE4_R36S_SWAP_MODE:-2}"
+case "$MODE" in 0|1|2|3|4) ;; *) echo "Invalid RE4_R36S_SWAP_MODE: $MODE"; exit 2;; esac
+export RE4_R36S_SWAP_MODE="$MODE"
 mkdir -p "$CORE" || exit 1
 (
 echo "==== CubeEvil4 / R36S experimental first game-data boot ===="
@@ -12,6 +15,7 @@ date
 uname -a
 free -m
 echo "DATA=$DATA"
+echo "SWAP_DIAG_MODE=$MODE"
 if [ ! -f "$CORE/r36s_game_boot" ]; then
   echo "ERROR=BOOT_EXECUTABLE_MISSING"
   exit 127
@@ -39,6 +43,8 @@ echo "TEST_EXIT_CODE=$status"
 exit "$status"
 ) > "$LOG" 2>&1
 status=$?
-printf "Primeiro boot RE4: codigo %s\nRelatorio: %s\n" "$status" "$LOG"
+MODE_LOG="$CORE/diagnostico_primeiro_boot_modo${MODE}_darkos.txt"
+cp "$LOG" "$MODE_LOG" 2>/dev/null || :
+printf "Primeiro boot RE4: codigo %s\nRelatorio: %s\nCopia especifica: %s\n" "$status" "$LOG" "$MODE_LOG"
 sleep 3
 exit "$status"

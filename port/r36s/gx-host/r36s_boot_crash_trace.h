@@ -34,6 +34,10 @@ static void dec(unsigned long long n){
   do{buf[i--]=char('0'+(n%10));n/=10;}while(n && i>=0);
   out(buf+i+1);
 }
+static void signedDec(long long n){
+  if(n<0){out("-");dec(static_cast<unsigned long long>(-(n+1))+1);}
+  else dec(static_cast<unsigned long long>(n));
+}
 static void hex(uintptr_t n){
   char b[2+sizeof(uintptr_t)*2+1];
   static const char d[]="0123456789abcdef";
@@ -67,6 +71,17 @@ static void handler(int sig,siginfo_t* info,void* ctx){
   if(entered++)_exit(128+sig);
   out("\n======== R36S_FRONTEND_CRASH ========\n");
   out("CRASH_SIGNAL=");dec(static_cast<unsigned>(sig));out("\n");
+  if(info){
+    out("CRASH_SI_CODE=");signedDec(info->si_code);out("\n");
+    out("CRASH_SI_ERRNO=");signedDec(info->si_errno);out("\n");
+    if(info->si_code==SI_TKILL || info->si_code==SI_USER || info->si_code==SI_QUEUE) {
+      out("CRASH_SI_SENDER_PID=");dec(static_cast<unsigned long long>(info->si_pid));out("\n");
+      out("CRASH_SI_SENDER_UID=");dec(static_cast<unsigned long long>(info->si_uid));out("\n");
+      out("CRASH_SI_ORIGIN=SOFTWARE_SIGNAL\n");
+    } else {
+      out("CRASH_SI_ORIGIN=FAULT_OR_OTHER_SIGNAL\n");
+    }
+  }
   out("CRASH_STAGE=");out(stage);out("\n");
   out("CRASH_RENDERED_FRAMES=");dec(static_cast<unsigned>(frame));out("\n");
   out("CRASH_GX_SEQUENCE=");dec(static_cast<unsigned>(sequence));out("\n");
@@ -78,6 +93,9 @@ static void handler(int sig,siginfo_t* info,void* ctx){
     out("CRASH_PC=");hex(static_cast<uintptr_t>(u->uc_mcontext.pc));out("\n");
     out("CRASH_LR=");hex(static_cast<uintptr_t>(u->uc_mcontext.regs[30]));out("\n");
     out("CRASH_SP=");hex(static_cast<uintptr_t>(u->uc_mcontext.sp));out("\n");
+    out("CRASH_FP=");hex(static_cast<uintptr_t>(u->uc_mcontext.regs[29]));out("\n");
+    out("CRASH_X8_SYSCALL_OR_TEMP=");hex(static_cast<uintptr_t>(u->uc_mcontext.regs[8]));out("\n");
+    out("CRASH_PSTATE=");hex(static_cast<uintptr_t>(u->uc_mcontext.pstate));out("\n");
     for(int n=0;n<8;n++){
       out("CRASH_X");dec(n);out("=");hex(static_cast<uintptr_t>(u->uc_mcontext.regs[n]));out("\n");
     }
