@@ -1,0 +1,48 @@
+name: R36S - profile deep GX draw and buffer costs
+
+on:
+  push:
+    branches:
+      - chatgpt/r36s-gx-draw-cost-profiler
+    paths:
+      - "port/r36s/gx-host/**"
+      - "port/android-decomp/app/src/main/cpp/gx_gl.cpp"
+      - "port/android-decomp/app/src/main/cpp/gx_gl.h"
+      - ".github/workflows/r36s-deep-gx-profiler.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deep-profile-arm64:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install SDL2 and OpenGL ES dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y cmake ninja-build g++ pkg-config libsdl2-dev libgles-dev
+      - name: Build separate ARM64 deep GX profiler
+        run: |
+          set -eux
+          cmake -S port/r36s/gx-host -B port/build/r36s-gx-host -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake --build port/build/r36s-gx-host --target r36s_game_deep_profile --parallel 2
+          file port/build/r36s-gx-host/r36s_game_deep_profile
+          readelf -h port/build/r36s-gx-host/r36s_game_deep_profile | grep -E "Class:|Machine:"
+          test -s port/build/r36s-gx-host/r36s_game_deep_profile
+      - name: Create addon (no changes to working stable launcher)
+        run: |
+          set -euo pipefail
+          mkdir -p dist/cubeevil4_live_gx
+          cp port/build/r36s-gx-host/r36s_game_deep_profile dist/cubeevil4_live_gx/
+          cp port/r36s/gx-host/RE4-R36S-Perfil-GX-Profundo.sh dist/
+          cp port/r36s/gx-host/README-DEEP-GX-PROFILE.md dist/LEIA-ME-GX-PROFUNDO.md
+          chmod +x dist/cubeevil4_live_gx/r36s_game_deep_profile dist/RE4-R36S-Perfil-GX-Profundo.sh
+      - name: Publish optional ARM64 addon
+        uses: actions/upload-artifact@v4
+        with:
+          name: CubeEvil4-R36S-GX-Deep-Profiler-ARM64
+          path: dist/
+          retention-days: 14
