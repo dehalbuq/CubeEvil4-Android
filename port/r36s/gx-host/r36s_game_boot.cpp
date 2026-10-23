@@ -27,6 +27,21 @@ int64_t nowNs() {
                     Clock::now().time_since_epoch()).count();
   return (int64_t)ns;
 }
+#if defined(RE4_R36S_PROFILE)
+struct StageMeter {
+  double totalMs=0.0;
+  double maxMs=0.0;
+  unsigned count=0;
+  void observe(Clock::time_point start,Clock::time_point finish){
+    const double ms=std::chrono::duration<double,std::milli>(finish-start).count();
+    totalMs+=ms;
+    maxMs=std::max(maxMs,ms);
+    ++count;
+  }
+  double average() const {return count?totalMs/count:0.0;}
+  void clear(){totalMs=0.0;maxMs=0.0;count=0;}
+};
+#endif
 void coreMemory(int pid){
   if(pid<=0)return;
   char path[64]{};
@@ -251,6 +266,11 @@ int main(int argc,char**argv) {
       unsigned lastTelemetryFrames=0;
       unsigned polls=0;
       bool userQuit=false;
+#if defined(RE4_R36S_PROFILE)
+      StageMeter gxRunMeter,presentMeter,finishMeter,swapMeter;
+      puts("PROFILER_ENABLED=1 STAGE_TIMING=CPU_WALL_CLOCK_MS_INCLUDING_DRIVER_WAIT");
+      puts("PROFILER_NOTE=GL_FINISH_TIME_INCLUDES_GPU_WAIT_NOT_PURE_CPU");
+#endif
       printf("SAFE_EXIT=ESC_OR_SDL_QUIT_OR_HOLD_SELECT_PLUS_START_2_SECONDS\n");
       while(Clock::now()<deadline && processed<36000 && !result && !userQuit){
         SDL_Event ev{};
@@ -300,7 +320,13 @@ int main(int argc,char**argv) {
               processed+1,last,c->opWords,c->vertexBytes,c->indexCount,c->blobBytes,c->draws,c->textureBytes,c->flags);
           }
           r36s_crash::mark("renderer_Run_GX",processed+1,last);
+#if defined(RE4_R36S_PROFILE)
+          const auto gxRunStart=Clock::now();
+#endif
           renderer.Run(*c);
+#if defined(RE4_R36S_PROFILE)
+          gxRunMeter.observe(gxRunStart,Clock::now());
+#endif
           r36s_crash::mark("renderer_Run_return",processed+1,last);
           if(processed<40 || processed%10==0)puts("TRACE_RENDER_RUN_OK=1");
           glBindFramebuffer(GL_FRAMEBUFFER,0);
@@ -308,7 +334,13 @@ int main(int argc,char**argv) {
           glClearColor(0,0,0,1);
           glClear(GL_COLOR_BUFFER_BIT);
           r36s_crash::mark("renderer_Present",processed+1,last);
+#if defined(RE4_R36S_PROFILE)
+          const auto presentStart=Clock::now();
+#endif
           if(renderer.Present(0,0,kW,kH))presented++;
+#if defined(RE4_R36S_PROFILE)
+          presentMeter.observe(presentStart,Clock::now());
+#endif
           r36s_crash::mark("renderer_Present_return",processed+1,last);
           GLenum e=glGetError();
           if(e!=GL_NO_ERROR) {
@@ -318,14 +350,26 @@ int main(int argc,char**argv) {
           if(swapMode==1 || swapMode==4 || swapMode==5){
             r36s_crash::mark("pre_swap_glFinish",processed+1,last);
             if(processed<30)printf("TRACE_GL_FINISH_BEGIN=%u\n",processed+1);
+#if defined(RE4_R36S_PROFILE)
+            const auto finishStart=Clock::now();
+#endif
             glFinish();
+#if defined(RE4_R36S_PROFILE)
+            finishMeter.observe(finishStart,Clock::now());
+#endif
             if(processed<30)printf("TRACE_GL_FINISH_OK=%u GL_ERROR=0x%x\n",
                                    processed+1,glGetError());
           }
           if(swapMode!=4){
             r36s_crash::mark("egl_swap",processed+1,last);
             if(processed<30)printf("TRACE_EGL_SWAP_BEGIN=%u\n",processed+1);
+#if defined(RE4_R36S_PROFILE)
+            const auto swapStart=Clock::now();
+#endif
             SDL_GL_SwapWindow(window);
+#if defined(RE4_R36S_PROFILE)
+            swapMeter.observe(swapStart,Clock::now());
+#endif
             if(processed<30)printf("TRACE_EGL_SWAP_OK=%u\n",processed+1);
           }else{
             if(processed==0)puts("WARNING_OFFSCREEN_TEST_NO_SCREEN_UPDATE=YES");
@@ -358,6 +402,14 @@ int main(int argc,char**argv) {
           const auto& stat=renderer.Stats();
           printf("PERFORMANCE_WINDOW_SECONDS=%.2f FRAMES=%u FPS_PRESENTED=%.2f TOTAL_FRAMES=%u DRAWS=%u TRIANGLES=%u SHADERS=%u\n",
               seconds,delta,seconds>0?delta/seconds:0.0,processed,stat.draws,stat.triangles,stat.programs);
+#if defined(RE4_R36S_PROFILE)
+          printf("STAGE_TIMING_MS SAMPLES=%u GX_RUN_AVG=%.2f GX_RUN_MAX=%.2f GX_RUN_SUM=%.2f PRESENT_AVG=%.2f PRESENT_MAX=%.2f PRESENT_SUM=%.2f GL_FINISH_AVG=%.2f GL_FINISH_MAX=%.2f GL_FINISH_SUM=%.2f EGL_SWAP_AVG=%.2f EGL_SWAP_MAX=%.2f EGL_SWAP_SUM=%.2f\n",
+            gxRunMeter.count,gxRunMeter.average(),gxRunMeter.maxMs,gxRunMeter.totalMs,
+            presentMeter.average(),presentMeter.maxMs,presentMeter.totalMs,
+            finishMeter.average(),finishMeter.maxMs,finishMeter.totalMs,
+            swapMeter.average(),swapMeter.maxMs,swapMeter.totalMs);
+          gxRunMeter.clear();presentMeter.clear();finishMeter.clear();swapMeter.clear();
+#endif
           memory("FRONTEND");
           coreMemory(corePid);
           lastTelemetryFrames=processed;
