@@ -1,0 +1,90 @@
+name: R36S DarkOSRE - CubeEvil4 ARM64 core
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/r36s-arm64-core.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-arm64:
+    name: Compile and test Linux AArch64 core
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      RE4_JOBS: "2"
+      RE4_OPT: "2"
+    steps:
+      - name: Checkout CubeEvil4
+        uses: actions/checkout@v4
+
+      - name: Install official Linux build prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo bash port/tools/whole_setup_linux.sh
+
+      - name: Build AArch64 core and run upstream tests with QEMU
+        id: compile
+        shell: bash
+        run: |
+          set -o pipefail
+          bash port/tools/whole_build.sh aarch64 2>&1 | tee r36s-arm64-build-output.log
+
+      - name: Identify generated binaries
+        if: always()
+        shell: bash
+        run: |
+          set -u
+          BUILD="port/build/whole-aarch64-O2"
+          if [ -e "$BUILD/re4_host" ]; then
+            file "$BUILD/re4_host"
+            readelf -h "$BUILD/re4_host" | grep -E 'Class:|Machine:' || true
+          fi
+          if [ -e "$BUILD/libre4_main.so" ]; then
+            file "$BUILD/libre4_main.so"
+          fi
+
+      - name: Assemble downloadable test artifacts
+        if: always()
+        shell: bash
+        run: |
+          set -u
+          BUILD="port/build/whole-aarch64-O2"
+          OUT="artifact/cubeevil4-linux-aarch64-core"
+          mkdir -p "$OUT/modules" "$OUT/logs"
+          cp r36s-arm64-build-output.log "$OUT/logs/" 2>/dev/null || true
+          cp "port/build/whole-aarch64-O2.log" "$OUT/logs/" 2>/dev/null || true
+          if [ -d "$BUILD" ]; then
+            for f in "$BUILD"/re4_host "$BUILD"/libre4_*.so; do
+              if [ -f "$f" ]; then cp "$f" "$OUT/"; fi
+            done
+            for f in "$BUILD"/modules/libre4_*.so; do
+              if [ -f "$f" ]; then cp "$f" "$OUT/modules/"; fi
+            done
+          fi
+          cat > "$OUT/README-R36S.txt" <<'NOTES'
+          EXPERIMENTAL LINUX ARM64 CORE (NOT A PLAYABLE R36S PORT)
+
+          This artifact contains the upstream re4_host test launcher and
+          game-core modules, if compilation succeeded. It does not include
+          a native Linux graphics/audio/controller frontend or game data.
+          Passing upstream QEMU tests does not prove that the game runs
+          on DarkOSRE or fits within the R36S memory limit.
+          
+          Build target: aarch64-linux-gnu
+          Target machine: R36S RK3326 with DarkOSRE Debian 13 AArch64.
+          NOTES
+          find "$OUT" -maxdepth 2 -type f | sort | head -40
+
+      - name: Upload build output, binaries and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cubeevil4-r36s-linux-aarch64-core
+          path: artifact/cubeevil4-linux-aarch64-core/
+          if-no-files-found: error
+          retention-days: 14
