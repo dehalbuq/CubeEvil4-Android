@@ -1,6 +1,6 @@
 // EXPERIMENT: original CubeEvil4 GX renderer receiving live GX chunks from
 // the project's existing re4_coreproc shared-memory IPC (Linux AArch64).
-// Default uses the upstream synthetic remote core test, with NO game data.
+// Real-game-data optional test. A separate 120-frame synthetic IPC test is preserved.
 // The core process is separate: its 32-bit game address constraints cannot
 // collide with SDL2/EGL/GL allocations in this process.
 #include "gx_gl.h"
@@ -26,6 +26,21 @@ int64_t nowNs() {
   const auto ns=std::chrono::duration_cast<std::chrono::nanoseconds>(
                     Clock::now().time_since_epoch()).count();
   return (int64_t)ns;
+}
+void coreMemory(int pid){
+  if(pid<=0)return;
+  char path[64]{};
+  snprintf(path,sizeof(path),"/proc/%d/status",pid);
+  FILE* f=fopen(path,"r");
+  if(!f){printf("CORE_MEM_STATUS=not_available_pid_%d\n",pid);return;}
+  char line[256];
+  while(fgets(line,sizeof(line),f)){
+    if(strncmp(line,"VmRSS:",6)==0||strncmp(line,"VmHWM:",6)==0||
+       strncmp(line,"VmSize:",7)==0){
+      printf("CORE_PID_%d_%s",pid,line);
+    }
+  }
+  fclose(f);
 }
 void memory(const char* stage) {
   FILE* f=fopen("/proc/self/status","r");
@@ -132,17 +147,19 @@ int main(int argc,char**argv) {
   }
   const std::string coreDir=argv[1],modules=argv[2],dataDir=argv[3];
   if(!checkGameData(dataDir))return 20;
-  int sec=argc>4?atoi(argv[4]):45;
-  sec=std::max(5,std::min(sec,90));
+  int sec=argc>4?atoi(argv[4]):180;
+  sec=std::max(5,std::min(sec,600));
   printf("RUN_MODE=GAME_BOOT MAX_SECONDS=%d\n",sec);
   const char* envMode=getenv("RE4_R36S_SWAP_MODE");
-  int swapMode=envMode?atoi(envMode):2;
-  if(swapMode<0 || swapMode>4){
-    fprintf(stderr,"SWAP_MODE_INVALID=%d valid 0..4\n",swapMode);
+  int swapMode=envMode?atoi(envMode):5;
+  if(swapMode<0 || swapMode>5){
+    fprintf(stderr,"SWAP_MODE_INVALID=%d valid 0..5\n",swapMode);
     return 21;
   }
   // Each mode changes only the GL swap / uniform-buffer strategy.
-  // Default mode 2 retains vsync and swaps but avoids Mali persistent UBO mapping.
+  // Mode 5: keep VSync interval 1, glFinish before SDL_GL_SwapWindow.
+  // This is the closest to the real-mode-1 configuration shown to survive
+  // 487 real-game frames on the R36S Mali-G31. Runtime stability unproven.
   if(swapMode==2)setenv("RE4_GX_PERSISTENT","0",1);
   if(swapMode==3)setenv("RE4_GX_UNIFORM_STREAM","0",1);
   printf("GPU_SWAP_DIAG_MODE=%d\n",swapMode);
@@ -151,11 +168,12 @@ int main(int argc,char**argv) {
     swapMode==1?"vsync0_glFinish_before_swap":
     swapMode==2?"vsync1_no_persistent_uniform_mapping":
     swapMode==3?"vsync1_legacy_uniform_buffers":
-                "vsync0_glFinish_no_swap_offscreen");
+    swapMode==4?"vsync0_glFinish_no_swap_offscreen":
+                "vsync1_glFinish_before_swap_R36S_candidate");
   printf("RE4_GX_PERSISTENT=%s RE4_GX_UNIFORM_STREAM=%s\n",
     getenv("RE4_GX_PERSISTENT")?getenv("RE4_GX_PERSISTENT"):"(default)",
     getenv("RE4_GX_UNIFORM_STREAM")?getenv("RE4_GX_UNIFORM_STREAM"):"(default)");
-  // This entry is synthetic and cannot execute original game data.
+  // Ensure real game boot; never accidentally run the synthetic probe here.
   unsetenv("RE4_CORE_TEST_ENTRY");
   setenv("RE4_CORE_IPC_CHECK","1",1);
   re4ipc::Spawn spawn;
@@ -181,7 +199,8 @@ int main(int argc,char**argv) {
     re4ipc::shutdown(1000);
     return 4;
   }
-  printf("CORE_PID=%d\n",re4ipc::pid());
+  const int corePid=re4ipc::pid();
+  printf("CORE_PID=%d\n",corePid);
   r36s_crash::mark("sdl_init",0,0);
   if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_EVENTS|SDL_INIT_GAMECONTROLLER)!=0) {
     fprintf(stderr,"SDL_ERROR=%s\n",SDL_GetError());
@@ -226,15 +245,33 @@ int main(int argc,char**argv) {
       const auto deadline=Clock::now()+std::chrono::seconds(sec);
       uint32_t last=0;
       auto nextTick=Clock::now();
+      auto telemetryAt=Clock::now()+std::chrono::seconds(5);
+      auto telemetryStart=Clock::now();
+      auto quitHeldAt=Clock::time_point{};
+      unsigned lastTelemetryFrames=0;
       unsigned polls=0;
-      while(Clock::now()<deadline && processed<6000 && !result){
+      bool userQuit=false;
+      printf("SAFE_EXIT=ESC_OR_SDL_QUIT_OR_HOLD_SELECT_PLUS_START_2_SECONDS\n");
+      while(Clock::now()<deadline && processed<36000 && !result && !userQuit){
         SDL_Event ev{};
         while(SDL_PollEvent(&ev)){
           if(ev.type==SDL_QUIT || (ev.type==SDL_KEYDOWN && ev.key.keysym.sym==SDLK_ESCAPE)){
-             printf("USER_CANCEL=1\n");result=13;break;
+             puts("USER_EXIT_EVENT=QUIT_OR_ESCAPE");userQuit=true;break;
           }
         }
-        if(result)break;
+        if(result||userQuit)break;
+        if(joy){
+          SDL_GameControllerUpdate();
+          const bool held=SDL_GameControllerGetButton(joy,SDL_CONTROLLER_BUTTON_BACK) &&
+                          SDL_GameControllerGetButton(joy,SDL_CONTROLLER_BUTTON_START);
+          if(held){
+            if(quitHeldAt==Clock::time_point{})quitHeldAt=Clock::now();
+            if(Clock::now()-quitHeldAt>=std::chrono::seconds(2)){
+              printf("USER_EXIT_EVENT=SELECT_PLUS_START_2S\n");
+              userQuit=true;break;
+            }
+          }else quitHeldAt=Clock::time_point{};
+        }
         r36s_crash::mark("core_state",processed,last);
         int state=re4ipc_state();
         if(state==RE4_CORE_FAILED || state==RE4_CORE_ENDED){
@@ -278,7 +315,7 @@ int main(int argc,char**argv) {
             if(glErrors<12)printf("CORE_GX_GL_ERROR_FRAME_%u=0x%x\n",processed,e);
             glErrors++;
           }
-          if(swapMode==1 || swapMode==4){
+          if(swapMode==1 || swapMode==4 || swapMode==5){
             r36s_crash::mark("pre_swap_glFinish",processed+1,last);
             if(processed<30)printf("TRACE_GL_FINISH_BEGIN=%u\n",processed+1);
             glFinish();
@@ -314,7 +351,21 @@ int main(int argc,char**argv) {
         if(nextTick>current) SDL_Delay((Uint32)std::chrono::duration_cast<std::chrono::milliseconds>(nextTick-current).count());
         else nextTick=current;
         if(++polls%150==0)printf("GAME_BOOT_HEARTBEAT=%u CORE_STATE=%d CHUNKS=%u PRESENTED=%u\n",polls,re4ipc_state(),processed,presented);
+        if(Clock::now()>=telemetryAt){
+          const auto timeNow=Clock::now();
+          const double seconds=std::chrono::duration<double>(timeNow-telemetryStart).count();
+          const unsigned delta=processed-lastTelemetryFrames;
+          const auto& stat=renderer.Stats();
+          printf("PERFORMANCE_WINDOW_SECONDS=%.2f FRAMES=%u FPS_PRESENTED=%.2f TOTAL_FRAMES=%u DRAWS=%u TRIANGLES=%u SHADERS=%u\n",
+              seconds,delta,seconds>0?delta/seconds:0.0,processed,stat.draws,stat.triangles,stat.programs);
+          memory("FRONTEND");
+          coreMemory(corePid);
+          lastTelemetryFrames=processed;
+          telemetryStart=timeNow;
+          telemetryAt=timeNow+std::chrono::seconds(5);
+        }
       }
+      printf("SESSION_STOP_REASON=%s\n",userQuit?"user_exit":result?"error":"time_or_frame_limit");
       r36s_crash::mark("report_stats",processed,last);
       reportStats(renderer);
       re4ipc_gx_detach();
@@ -322,14 +373,16 @@ int main(int argc,char**argv) {
       re4ipc::checkCounts(&a,&b,&c,&d);
       printf("CORE_IPC_CHECKS_GX=%u MISMATCH=%u SNAPSHOTS=%u SNAPSHOT_MISMATCH=%u\n",a,b,c,d);
       printf("CORE_GX_RECEIVED=%u RESETS=%u PRESENTED=%u GL_ERRORS=%u\n",processed,resets,presented,glErrors);
-      if(!result && (processed<1 || presented<1 || resets<1 || b || glErrors || renderer.Stats().shaderErrors)){
+      if(!result && !userQuit && (processed<1 || presented<1 || resets<1 || b || glErrors || renderer.Stats().shaderErrors)){
         result=11;
       }
-      if(!result) puts("RESULT=GAME_BOOT_RENDERED_FRAMES_PLAYABILITY_UNVERIFIED");
+      if(!result && userQuit) puts("RESULT=USER_EXIT_CLEAN");
+      else if(!result) puts("RESULT=GAME_BOOT_RENDERED_FRAMES_PLAYABILITY_UNVERIFIED");
       else puts("RESULT=GAME_BOOT_NEEDS_INVESTIGATION");
       printf("GPU_TEST_MODE=%d FRAMES=%u PRESENTED_CALLS=%u SWAP_CALLED=%s\n",
               swapMode,processed,presented,swapMode==4?"NO":"YES");
       memory("END");
+      coreMemory(corePid);
       r36s_crash::mark("renderer_release",processed,last);
       renderer.Release();
     }

@@ -1,0 +1,50 @@
+name: R36S - stable GLES session and FPS telemetry
+
+on:
+  push:
+    branches:
+      - chatgpt/r36s-stable-gles-session
+    paths:
+      - "port/r36s/gx-host/**"
+      - ".github/workflows/r36s-stable-gles-session.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  arm64-session:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies for native ARM64 GLES3 and SDL2
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y cmake ninja-build g++ pkg-config libsdl2-dev libgles-dev
+      - name: Compile stabilized frontend with crash symbols
+        run: |
+          set -eux
+          cmake -S port/r36s/gx-host -B port/build/r36s-gx-host -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake --build port/build/r36s-gx-host --target r36s_game_boot --parallel 2
+          file port/build/r36s-gx-host/r36s_game_boot
+          readelf -h port/build/r36s-gx-host/r36s_game_boot | grep -E "Class:|Machine:"
+          test -s port/build/r36s-gx-host/r36s_game_boot
+      - name: Assemble additive /roms/ports overlay
+        run: |
+          set -euo pipefail
+          mkdir -p dist/cubeevil4_live_gx
+          cp port/build/r36s-gx-host/r36s_game_boot dist/cubeevil4_live_gx/
+          for f in RE4-Primeiro-Boot.sh RE4-R36S-Estavel.sh RE4-R36S-Teste-10min.sh; do
+            cp "port/r36s/gx-host/$f" dist/
+            chmod +x "dist/$f"
+          done
+          cp port/r36s/gx-host/README-R36S-STABLE.md dist/LEIA-ME-ESTAVEL.md
+          chmod +x dist/cubeevil4_live_gx/r36s_game_boot
+          test "$(find dist -type f | wc -l)" -ge 5
+      - name: Upload ready-to-extract ARM64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CubeEvil4-R36S-GLES-Estavel-ARM64
+          path: dist/
+          retention-days: 14
