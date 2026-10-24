@@ -172,6 +172,126 @@ void reportStats(const re4gx::GxRenderer& r){
     s.culledFarDraws,s.culledFarTriangles,s.skippedAutofocus);
 #endif
 }
+
+#ifdef RE4_R36S_SHOWCASE
+// Presentation choices for RE4's baked letterbox. A real 4:3 camera FOV
+// needs invasive changes to the original game; this only changes the XFB UVs.
+void showcaseAspect(re4gx::GxRenderer& renderer,int mode){
+  if(mode==0)renderer.SetShowcaseDisplayCrop(.125f,.125f,.75f,.75f); // proportionate 4:3 zoom, crops HUD edges
+  else if(mode==1)renderer.SetShowcaseDisplayCrop(0.f,.125f,1.f,.75f); // fills screen, stretches vertically
+  else renderer.SetShowcaseDisplayCrop(0.f,0.f,1.f,1.f); // original GameCube output and bars
+}
+
+// Sound is PCM 32000 Hz, S16 stereo in the core IPC ring (core_ipc.cpp).
+// Never read it on the graphics thread: GX rendering can take 150+ ms/frame.
+// SDL_QueueAudio is fed independently to keep latency below ~125ms.
+struct ShowcaseAudio {
+  SDL_AudioDeviceID dev=0;
+  std::atomic<bool> done{false};
+  std::thread worker;
+  void start(){
+    if(SDL_InitSubSystem(SDL_INIT_AUDIO)!=0)
+      fprintf(stderr,"SHOWCASE_AUDIO_INIT_FAILED=%s\n",SDL_GetError());
+    else {
+      SDL_AudioSpec wanted{},got{};
+      wanted.freq=32000; wanted.format=AUDIO_S16SYS;
+      wanted.channels=2; wanted.samples=512; wanted.callback=nullptr;
+      dev=SDL_OpenAudioDevice(nullptr,0,&wanted,&got,0);
+      if(!dev)fprintf(stderr,"SHOWCASE_AUDIO_DEVICE_FAILED=%s\n",SDL_GetError());
+      else SDL_PauseAudioDevice(dev,0);
+    }
+    worker=std::thread([this] {
+      std::array<int16_t,512> pcm{};  // 256 stereo frames = 8 ms
+      constexpr Uint32 kQueueCap=32000u*2u*2u/8u; // 125 ms
+      while(!done.load(std::memory_order_relaxed)){
+        if(dev && SDL_GetQueuedAudioSize(dev)>kQueueCap){
+          SDL_Delay(4);continue;
+        }
+        re4ipc_audio(pcm.data(),256);  // fills unavailable frames with silence
+        if(dev && SDL_QueueAudio(dev,pcm.data(),static_cast<Uint32>(pcm.size()*sizeof(pcm[0])))!=0)
+          SDL_Delay(10);
+        if(!dev)SDL_Delay(8);  // even without ALSA, drain ring to avoid stopping game
+      }
+    });
+  }
+  void stopAndClose(){
+    done.store(true,std::memory_order_relaxed);
+    if(worker.joinable())worker.join();
+    if(dev){SDL_ClearQueuedAudio(dev);SDL_CloseAudioDevice(dev);dev=0;}
+  }
+  ~ShowcaseAudio(){stopAndClose();}
+};
+
+// Embedded bitmap font for the exit menu. No external fonts or SDL_ttf
+// dependencies, no proprietary artwork, and no code executes in normal play.
+using ShowcaseGlyph=std::array<unsigned char,7>;
+const ShowcaseGlyph& glyph(char ch){
+  static const ShowcaseGlyph blank{};
+  switch(ch){
+    case 'A': {static const ShowcaseGlyph g{14,17,17,31,17,17,17};return g;}
+    case 'B': {static const ShowcaseGlyph g{30,17,17,30,17,17,30};return g;}
+    case 'C': {static const ShowcaseGlyph g{14,17,16,16,16,17,14};return g;}
+    case 'D': {static const ShowcaseGlyph g{30,17,17,17,17,17,30};return g;}
+    case 'E': {static const ShowcaseGlyph g{31,16,16,30,16,16,31};return g;}
+    case 'F': {static const ShowcaseGlyph g{31,16,16,30,16,16,16};return g;}
+    case 'G': {static const ShowcaseGlyph g{14,17,16,23,17,17,15};return g;}
+    case 'I': {static const ShowcaseGlyph g{31,4,4,4,4,4,31};return g;}
+    case 'J': {static const ShowcaseGlyph g{7,2,2,2,18,18,12};return g;}
+    case 'L': {static const ShowcaseGlyph g{16,16,16,16,16,16,31};return g;}
+    case 'M': {static const ShowcaseGlyph g{17,27,21,21,17,17,17};return g;}
+    case 'N': {static const ShowcaseGlyph g{17,25,21,19,17,17,17};return g;}
+    case 'O': {static const ShowcaseGlyph g{14,17,17,17,17,17,14};return g;}
+    case 'P': {static const ShowcaseGlyph g{30,17,17,30,16,16,16};return g;}
+    case 'R': {static const ShowcaseGlyph g{30,17,17,30,20,18,17};return g;}
+    case 'S': {static const ShowcaseGlyph g{15,16,16,14,1,1,30};return g;}
+    case 'T': {static const ShowcaseGlyph g{31,4,4,4,4,4,4};return g;}
+    case 'U': {static const ShowcaseGlyph g{17,17,17,17,17,17,14};return g;}
+    case 'V': {static const ShowcaseGlyph g{17,17,17,17,17,10,4};return g;}
+    case 'X': {static const ShowcaseGlyph g{17,17,10,4,10,17,17};return g;}
+    case 'Y': {static const ShowcaseGlyph g{17,17,10,4,4,4,4};return g;}
+    case '?': {static const ShowcaseGlyph g{14,17,1,2,4,0,4};return g;}
+    case ':': {static const ShowcaseGlyph g{0,4,4,0,4,4,0};return g;}
+    case '+': {static const ShowcaseGlyph g{0,4,4,31,4,4,0};return g;}
+    case '3': {static const ShowcaseGlyph g{30,1,1,14,1,1,30};return g;}
+    case '4': {static const ShowcaseGlyph g{2,6,10,18,31,2,2};return g;}
+    default:return blank;
+  }
+}
+void showcaseRect(int x,int y,int width,int height,float r,float g,float b){
+  if(x<0||y<0||width<=0||height<=0||x+width>kW||y+height>kH)return;
+  glScissor(x,kH-y-height,width,height);
+  glClearColor(r,g,b,1);
+  glClear(GL_COLOR_BUFFER_BIT);
+}
+void showcaseText(int x,int y,int factor,const char* str,float r,float g,float b){
+  for(const char* ch=str;*ch;++ch,x+=factor*6){
+    const auto &gph=glyph(*ch);
+    for(int row=0;row<7;++row)
+      for(int col=0;col<5;++col)
+        if(gph[row]&(16>>col))
+          showcaseRect(x+col*factor,y+row*factor,factor,factor,r,g,b);
+  }
+}
+void showcaseExitOverlay(int displayMode){
+  glBindFramebuffer(GL_FRAMEBUFFER,0);
+  glDisable(GL_BLEND);
+  glDisable(GL_DEPTH_TEST);
+  glDisable(GL_CULL_FACE);
+  glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);
+  glEnable(GL_SCISSOR_TEST);
+  showcaseRect(80,142,480,194,.02f,.025f,.04f);
+  showcaseRect(80,142,480,4,.83f,.63f,.18f);
+  showcaseRect(80,332,480,4,.83f,.63f,.18f);
+  showcaseText(166,162,4,"SAIR DO JOGO?",1.f,.85f,.4f);
+  showcaseText(144,210,3,"A: SAIR",.5f,1.f,.5f);
+  showcaseText(335,210,3,"B: VOLTAR",1.f,.55f,.55f);
+  showcaseText(132,268,3,"Y: TELA",.75f,.85f,1.f);
+  showcaseText(323,268,2,displayMode==0?"ZOOM 4:3":
+                              displayMode==1?"ESTICADO 4:3":"ORIGINAL",.9f,.9f,.9f);
+  glDisable(GL_SCISSOR_TEST);
+}
+#endif
+
 } // namespace
 
 int main(int argc,char**argv) {
