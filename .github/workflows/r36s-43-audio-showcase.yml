@@ -1,0 +1,50 @@
+name: R36S - 4by3 SDL audio showcase
+on:
+  push:
+    branches:
+      - chatgpt/r36s-showcase-43-audio-exit
+    paths:
+      - "port/r36s/gx-host/**"
+      - "port/android-decomp/app/src/main/cpp/gx_gl.cpp"
+      - "port/android-decomp/app/src/main/cpp/gx_gl.h"
+      - ".github/workflows/r36s-43-audio-showcase.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build-showcase-arm64:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ARM64 compiler + GLES and SDL2 audio/video development libs
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y cmake ninja-build g++ binutils pkg-config libsdl2-dev libgles-dev
+      - name: Compile isolated presentation binary (Cortex-A35, lean release)
+        run: |
+          set -eux
+          cmake -S port/r36s/gx-host -B port/build/r36s-gx-host -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build port/build/r36s-gx-host --target r36s_game_showcase --parallel 2
+          file port/build/r36s-gx-host/r36s_game_showcase
+          readelf -h port/build/r36s-gx-host/r36s_game_showcase | grep -E 'Class:|Machine:'
+          test -s port/build/r36s-gx-host/r36s_game_showcase
+          readelf -d port/build/r36s-gx-host/r36s_game_showcase | grep -E 'NEEDED.*(SDL2|GLESv2|libc)'
+      - name: Make additive release overlay (never package Capcom game binaries/data)
+        run: |
+          set -euo pipefail
+          sh -n port/r36s/gx-host/RE4-R36S-Demonstracao-43.sh
+          mkdir -p dist/cubeevil4_live_gx
+          cp port/build/r36s-gx-host/r36s_game_showcase dist/cubeevil4_live_gx/
+          strip --strip-unneeded dist/cubeevil4_live_gx/r36s_game_showcase
+          cp port/r36s/gx-host/RE4-R36S-Demonstracao-43.sh dist/
+          cp port/r36s/gx-host/README-R36S-SHOWCASE.md dist/LEIA-ME-R36S-DEMO.md
+          chmod +x dist/cubeevil4_live_gx/r36s_game_showcase dist/RE4-R36S-Demonstracao-43.sh
+          test "$(find dist -type f | wc -l)" -eq 3
+          ! find dist -type f | grep -Ei 'iso$|gcm$|\.drs$|\.das$|\.rel$|re4_coreproc|libre4_|memcard|card-a.bin'
+      - name: Publish optional R36S game showcase frontend only
+        uses: actions/upload-artifact@v4
+        with:
+          name: CubeEvil4-R36S-Demo-43-Audio-ARM64
+          path: dist/
+          retention-days: 14
