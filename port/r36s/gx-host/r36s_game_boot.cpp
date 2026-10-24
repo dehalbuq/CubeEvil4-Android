@@ -454,6 +454,14 @@ int main(int argc,char**argv) {
   // firmware mappings where SELECT/BACK doesn't generate controller events.
   r36s_showcase_exit::Device exitDevice;
   exitDevice.attach(joy);
+  const bool diagnoseInput=std::getenv("RE4_SHOWCASE_INPUT_DIAG") &&
+                           std::strcmp(std::getenv("RE4_SHOWCASE_INPUT_DIAG"),"1")==0;
+  if(diagnoseInput) {
+    fprintf(stderr,"R36S_INPUT_DEVICES=%d GAMECONTROLLER=%s\n",
+            SDL_NumJoysticks(), joy?SDL_GameControllerName(joy):"(no SDL GC mapping)");
+    for(int i=0;i<SDL_NumJoysticks();++i)
+      fprintf(stderr,"R36S_INPUT_JOYSTICK_%d=%s\n",i,SDL_JoystickNameForIndex(i));
+  }
 #endif
   try {
     re4gx::GxRenderer renderer;
@@ -527,6 +535,10 @@ int main(int argc,char**argv) {
               cancelExit=true;
           }
           if(ev.type==SDL_JOYBUTTONDOWN){
+            if(diagnoseInput)
+              fprintf(stderr,"R36S_RAW_JOYBUTTON_DOWN DEVICE=%d BUTTON=%u\n",
+                      static_cast<int>(ev.jbutton.which),
+                      static_cast<unsigned>(ev.jbutton.button));
             if(exitDevice.matchesRaw(ev.jbutton.which,ev.jbutton.button,0)||
                exitDevice.matchesRaw(ev.jbutton.which,ev.jbutton.button,4))
               toggleMenu=true;
@@ -549,7 +561,13 @@ int main(int argc,char**argv) {
         // Unconditional emergency exit works even when the overlay is
         // invisible or A/B is unmapped: hold START alone for 6 seconds,
         // or START+SELECT for 1.5 seconds.
-        if(directExit){userQuit=true;break;}
+        if(directExit){
+          if(diagnoseInput)fprintf(stderr,"R36S_USER_EXIT=EMERGENCY_GESTURE\n");
+          userQuit=true;
+          break;
+        }
+        if(diagnoseInput && toggleMenu)
+          fprintf(stderr,"R36S_EXIT_MENU_TOGGLED=1 MENU_WAS_OPEN=%d\n",showcaseMenu?1:0);
         // Never auto-confirm with the button press that opens the menu.
         if(toggleMenu) {
           showcaseMenu=!showcaseMenu;
