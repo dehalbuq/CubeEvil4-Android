@@ -119,6 +119,11 @@ class Device {
     }
     select_=mapped(SDL_CONTROLLER_BUTTON_BACK,0);
     start_=mapped(SDL_CONTROLLER_BUTTON_START,1);
+    // Two common USB/handheld raw layouts: SELECT=8 START=9 and
+    // SELECT=6 START=7. Only enable aliases if SDL has no mapping.
+    // Explicit RE4_SHOWCASE_RAW_* overrides disable these aliases.
+    altSelect_ = unbound(SDL_CONTROLLER_BUTTON_BACK,"RE4_SHOWCASE_RAW_SELECT") ? 6 : -1;
+    altStart_ = unbound(SDL_CONTROLLER_BUTTON_START,"RE4_SHOWCASE_RAW_START") ? 7 : -1;
     l1_=mapped(SDL_CONTROLLER_BUTTON_LEFTSHOULDER,2);
     r1_=mapped(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER,3);
     a_=mapped(SDL_CONTROLLER_BUTTON_A,4);
@@ -159,8 +164,8 @@ class Device {
     }
     // Independent raw poll even when a controller mapping exists. This is
     // the primary fix on devices whose SELECT does not generate GC "BACK".
-    s.select|=read(select_);
-    s.start|=read(start_);
+    s.select|=read(select_)||read(altSelect_);
+    s.start|=read(start_)||read(altStart_);
     s.leftShoulder|=read(l1_);
     s.rightShoulder|=read(r1_);
     s.a|=read(a_);
@@ -172,8 +177,8 @@ class Device {
   bool matchesRaw(SDL_JoystickID id,int button,int role)const {
     if(!joystick_ || id!=SDL_JoystickInstanceID(joystick_))return false;
     switch(role){
-      case 0:return matches(button,select_);
-      case 1:return matches(button,start_);
+      case 0:return matches(button,select_)||matches(button,altSelect_);
+      case 1:return matches(button,start_)||matches(button,altStart_);
       case 2:return matches(button,a_);
       case 3:return matches(button,b_);
       case 4:return matches(button,home_);
@@ -217,11 +222,19 @@ class Device {
     }
     return configured(role,fallback);
   }
+  bool unbound(SDL_GameControllerButton button,const char* env) const {
+    if(std::getenv(env))return false;
+    if(!controller_)return true;
+    const SDL_GameControllerButtonBind bind=
+        SDL_GameControllerGetBindForButton(controller_,button);
+    return bind.bindType!=SDL_CONTROLLER_BINDTYPE_BUTTON;
+  }
 
   SDL_GameController* controller_=nullptr;
   SDL_Joystick* joystick_=nullptr;
   bool owned_=false;
-  int select_=-1,start_=-1,l1_=-1,r1_=-1,a_=-1,b_=-1,home_=-1;
+  int select_=-1,start_=-1,altSelect_=-1,altStart_=-1;
+  int l1_=-1,r1_=-1,a_=-1,b_=-1,home_=-1;
 };
 } // namespace r36s_showcase_exit
 #endif
