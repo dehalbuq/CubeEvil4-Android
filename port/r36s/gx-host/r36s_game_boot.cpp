@@ -7,6 +7,9 @@
 #include "re4_core_client.h"
 #include "re4_gx_frame.h"
 #include "r36s_boot_crash_trace.h"
+#ifdef RE4_R36S_SHOWCASE
+#include "r36s_showcase_clean_data.h"
+#endif
 #include <SDL2/SDL.h>
 #include <GLES3/gl3.h>
 #include <algorithm>
@@ -174,12 +177,12 @@ void reportStats(const re4gx::GxRenderer& r){
 }
 
 #ifdef RE4_R36S_SHOWCASE
-// Presentation choices for RE4's baked letterbox. A real 4:3 camera FOV
-// needs invasive changes to the original game; this only changes the XFB UVs.
-void showcaseAspect(re4gx::GxRenderer& renderer,int mode){
-  if(mode==0)renderer.SetShowcaseDisplayCrop(.125f,.125f,.75f,.75f); // proportionate 4:3 zoom, crops HUD edges
-  else if(mode==1)renderer.SetShowcaseDisplayCrop(0.f,.125f,1.f,.75f); // fills screen, stretches vertically
-  else renderer.SetShowcaseDisplayCrop(0.f,0.f,1.f,1.f); // original GameCube output and bars
+// Full-screen fit on the R36S 4:3 display: use the ENTIRE source width,
+// crop ONLY the black letterbox rows, and stretch the 16:9 active picture
+// vertically to fill 640x480. Deliberately distorts proportions rather than
+// losing gameplay objects or HUD at the left and right edges.
+void showcaseAspect(re4gx::GxRenderer& renderer) {
+  renderer.SetShowcaseDisplayCrop(0.0f,0.125f,1.0f,0.75f);
 }
 
 // Sound is PCM 32000 Hz, S16 stereo in the core IPC ring (core_ipc.cpp).
@@ -272,7 +275,7 @@ void showcaseText(int x,int y,int factor,const char* str,float r,float g,float b
           showcaseRect(x+col*factor,y+row*factor,factor,factor,r,g,b);
   }
 }
-void showcaseExitOverlay(int displayMode){
+void showcaseExitOverlay(){
   glBindFramebuffer(GL_FRAMEBUFFER,0);
   glDisable(GL_BLEND);
   glDisable(GL_DEPTH_TEST);
@@ -285,9 +288,7 @@ void showcaseExitOverlay(int displayMode){
   showcaseText(166,162,4,"SAIR DO JOGO?",1.f,.85f,.4f);
   showcaseText(144,210,3,"A: SAIR",.5f,1.f,.5f);
   showcaseText(335,210,3,"B: VOLTAR",1.f,.55f,.55f);
-  showcaseText(132,268,3,"Y: TELA",.75f,.85f,1.f);
-  showcaseText(323,268,2,displayMode==0?"ZOOM 4:3":
-                              displayMode==1?"ESTICADO 4:3":"ORIGINAL",.9f,.9f,.9f);
+  showcaseText(181,274,2,"CUBEEVIL4 R36S",.75f,.85f,1.f);
   glDisable(GL_SCISSOR_TEST);
 }
 #endif
@@ -310,8 +311,21 @@ int main(int argc,char**argv) {
     fprintf(stderr,"usage: r36s_game_boot COREFOLDER MODULESFOLDER DATADIR [SECONDS]\n");
     return 2;
   }
-  const std::string coreDir=argv[1],modules=argv[2],dataDir=argv[3];
-  if(!checkGameData(dataDir))return 20;
+  const std::string coreDir=argv[1],modules=argv[2];
+  const std::string originalDataDir=argv[3];
+  if(!checkGameData(originalDataDir))return 20;
+#ifdef RE4_R36S_SHOWCASE
+  // Own-data, per-process, read-only symlink overlay: the original debug
+  // config stays byte-for-byte intact. Only the copied PRINT_PAGE number
+  // is set to zero, disabling the game's native debug text renderer.
+  ShowcaseCleanData cleanGameData;
+  const bool debugOverlayReady=cleanGameData.prepare(coreDir,originalDataDir);
+  const std::string dataDir=debugOverlayReady?cleanGameData.path():originalDataDir;
+  if(!debugOverlayReady)
+    fprintf(stderr,"SHOWCASE_DEBUG_TEXT_NOTE=unable_to_prepare_clean_config_overlay; original debug text may remain\n");
+#else
+  const std::string dataDir=originalDataDir;
+#endif
   int sec=argc>4?atoi(argv[4]):180;
 #ifdef RE4_R36S_SHOWCASE
   // A practical demo is not cut off after 180 seconds; maximum 2h safeguards
@@ -456,14 +470,7 @@ int main(int argc,char**argv) {
       puts("SHADER_CACHE_NOTE=first_run_compiles_new_shaders_next_run_can_load_binary_cache");
 #endif
 #ifdef RE4_R36S_SHOWCASE
-      // Default to geometric 4:3 zoom. A HUD-safe stretch and the original
-      // letterbox are selectable in the exit/menu overlay with Y.
-      int displayMode=0;
-      if(const char* style=getenv("RE4_SHOWCASE_ASPECT")) {
-        if(strcmp(style,"stretch")==0)displayMode=1;
-        else if(strcmp(style,"original")==0)displayMode=2;
-      }
-      showcaseAspect(renderer,displayMode);
+      showcaseAspect(renderer);
       ShowcaseAudio showcaseAudio;
       showcaseAudio.start();
       bool showcaseMenu=false;
@@ -493,22 +500,20 @@ int main(int argc,char**argv) {
       while(Clock::now()<deadline && processed<36000 && !result && !userQuit){
         SDL_Event ev{};
 #ifdef RE4_R36S_SHOWCASE
-        bool toggleMenu=false,confirmExit=false,cancelExit=false,cycleAspect=false;
+        bool toggleMenu=false,confirmExit=false,cancelExit=false;
         while(SDL_PollEvent(&ev)){
           if(ev.type==SDL_QUIT){userQuit=true;break;}
           if(ev.type==SDL_KEYDOWN && ev.key.repeat==0){
             if(ev.key.keysym.sym==SDLK_ESCAPE||ev.key.keysym.sym==SDLK_F1)toggleMenu=true;
             else if(showcaseMenu && (ev.key.keysym.sym==SDLK_RETURN||ev.key.keysym.sym==SDLK_z))confirmExit=true;
             else if(showcaseMenu && (ev.key.keysym.sym==SDLK_BACKSPACE||ev.key.keysym.sym==SDLK_x))cancelExit=true;
-            else if(showcaseMenu && ev.key.keysym.sym==SDLK_y)cycleAspect=true;
-          }
+           }
           if(ev.type==SDL_CONTROLLERBUTTONDOWN){
             if(ev.cbutton.button==SDL_CONTROLLER_BUTTON_BACK||ev.cbutton.button==SDL_CONTROLLER_BUTTON_GUIDE)
               toggleMenu=true;
             else if(showcaseMenu && ev.cbutton.button==SDL_CONTROLLER_BUTTON_A)confirmExit=true;
             else if(showcaseMenu && ev.cbutton.button==SDL_CONTROLLER_BUTTON_B)cancelExit=true;
-            else if(showcaseMenu && ev.cbutton.button==SDL_CONTROLLER_BUTTON_Y)cycleAspect=true;
-          }
+           }
         }
         if(joy){
           SDL_GameControllerUpdate();
@@ -528,8 +533,7 @@ int main(int argc,char**argv) {
         }
         if(showcaseMenu && confirmExit)userQuit=true;
         if(showcaseMenu && cancelExit){showcaseMenu=false;re4ipc_pause(0,500);}
-        if(showcaseMenu && cycleAspect){displayMode=(displayMode+1)%3;showcaseAspect(renderer,displayMode);}
-#else
+ #else
         while(SDL_PollEvent(&ev)){
           if(ev.type==SDL_QUIT || (ev.type==SDL_KEYDOWN && ev.key.keysym.sym==SDLK_ESCAPE)){
              puts("USER_EXIT_EVENT=QUIT_OR_ESCAPE");userQuit=true;break;
@@ -599,14 +603,16 @@ int main(int argc,char**argv) {
           TRACE_MARK("renderer_Present",processed+1,last);
           if(renderer.Present(0,0,kW,kH))presented++;
 #ifdef RE4_R36S_SHOWCASE
-          if(showcaseMenu)showcaseExitOverlay(displayMode);
+          if(showcaseMenu)showcaseExitOverlay();
 #endif
           TRACE_MARK("renderer_Present_return",processed+1,last);
+#ifndef RE4_R36S_SHOWCASE
           GLenum e=glGetError();
           if(e!=GL_NO_ERROR) {
             if(glErrors<12)printf("CORE_GX_GL_ERROR_FRAME_%u=0x%x\n",processed,e);
             glErrors++;
           }
+#endif
           if(swapMode==1 || swapMode==4 || swapMode==5){
             TRACE_MARK("pre_swap_glFinish",processed+1,last);
             if(processed<30)printf("TRACE_GL_FINISH_BEGIN=%u\n",processed+1);
@@ -640,7 +646,7 @@ int main(int argc,char**argv) {
           glClearColor(0,0,0,1);
           glClear(GL_COLOR_BUFFER_BIT);
           renderer.Present(0,0,kW,kH);
-          showcaseExitOverlay(displayMode);
+          showcaseExitOverlay();
           glFinish(); // proven Mali mode 5 remains intact in exit menu
           SDL_GL_SwapWindow(window);
         }
