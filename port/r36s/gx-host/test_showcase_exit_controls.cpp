@@ -79,7 +79,7 @@ int main(){
     assert(index>=0);
     Device d;
     d.attach(nullptr); // raw joystick fallback without SDL GameController
-    SDL_Joystick* virtualDevice=SDL_JoystickFromDeviceIndex(index);
+    SDL_Joystick* virtualDevice=SDL_JoystickOpen(index);
     assert(virtualDevice);
     assert(SDL_JoystickSetVirtualButton(virtualDevice,8,1)==0);
     assert(SDL_JoystickSetVirtualButton(virtualDevice,9,1)==0);
@@ -90,6 +90,7 @@ int main(){
     assert(d.matchesRaw(SDL_JoystickInstanceID(virtualDevice),8,0));
     assert(d.matchesRaw(SDL_JoystickInstanceID(virtualDevice),9,1));
     d.release();
+    SDL_JoystickClose(virtualDevice);
     SDL_JoystickDetachVirtual(index);
 #endif
     SDL_Quit();
