@@ -145,3 +145,9 @@ re4_a35_target(r36s_game_showcase_full TRUE)
 target_compile_definitions(r36s_game_showcase_full PRIVATE
   RE4_R36S_SCALABLE_EFB=1 RE4_R36S_SHOWCASE=1 NDEBUG=1
 )
+# Hotfix: independent physical-button exit controls. Do not overwrite the
+# fullscreen/clean build that the user has already run.
+re4_a35_target(r36s_game_showcase_exitfix TRUE)
+target_compile_definitions(r36s_game_showcase_exitfix PRIVATE
+  RE4_R36S_SCALABLE_EFB=1 RE4_R36S_SHOWCASE=1 NDEBUG=1
+)

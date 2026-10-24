@@ -9,6 +9,7 @@
 #include "r36s_boot_crash_trace.h"
 #ifdef RE4_R36S_SHOWCASE
 #include "r36s_showcase_clean_data.h"
+#include "r36s_showcase_exit_controls.h"
 #endif
 #include <SDL2/SDL.h>
 #include <GLES3/gl3.h>
@@ -419,6 +420,11 @@ int main(int argc,char**argv) {
   const int corePid=re4ipc::pid();
   printf("CORE_PID=%d\n",corePid);
   TRACE_MARK("sdl_init",0,0);
+#ifdef RE4_R36S_SHOWCASE
+  // Keep the R36S physical joystick visible even if KMSDRM window focus is
+  // unexpectedly lost, and receive both SDL_JOYBUTTONDOWN and controller events.
+  SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS,"1");
+#endif
   if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_EVENTS|SDL_INIT_GAMECONTROLLER)!=0) {
     fprintf(stderr,"SDL_ERROR=%s\n",SDL_GetError());
     re4ipc::shutdown(3000);return 5;
@@ -448,6 +454,22 @@ int main(int argc,char**argv) {
     interval,intervalRc,SDL_GL_GetSwapInterval(),intervalRc?SDL_GetError():"none");
   printf("GL_RENDERER=%s\nGL_VERSION=%s\n",glGetString(GL_RENDERER),glGetString(GL_VERSION));
   int result=0;unsigned processed=0,resets=0,presented=0,glErrors=0;
+#ifdef RE4_R36S_SHOWCASE
+  // Keep a raw SDL_Joystick handle alongside SDL_GameController for R36S
+  // firmware mappings where SELECT/BACK doesn't generate controller events.
+  r36s_showcase_exit::Device exitDevice;
+  exitDevice.attach(joy);
+  SDL_JoystickEventState(SDL_ENABLE);
+  SDL_GameControllerEventState(SDL_ENABLE);
+  const bool diagnoseInput=std::getenv("RE4_SHOWCASE_INPUT_DIAG") &&
+                           std::strcmp(std::getenv("RE4_SHOWCASE_INPUT_DIAG"),"1")==0;
+  if(diagnoseInput) {
+    fprintf(stderr,"R36S_INPUT_DEVICES=%d GAMECONTROLLER=%s\n",
+            SDL_NumJoysticks(), joy?SDL_GameControllerName(joy):"(no SDL GC mapping)");
+    for(int i=0;i<SDL_NumJoysticks();++i)
+      fprintf(stderr,"R36S_INPUT_JOYSTICK_%d=%s\n",i,SDL_JoystickNameForIndex(i));
+  }
+#endif
   try {
     re4gx::GxRenderer renderer;
     re4gx::GxOptions opts;
@@ -474,8 +496,7 @@ int main(int argc,char**argv) {
       ShowcaseAudio showcaseAudio;
       showcaseAudio.start();
       bool showcaseMenu=false;
-      auto showcaseChord=Clock::time_point{};
-      bool showcaseChordHandled=false;
+      r36s_showcase_exit::Gestures exitGestures;
 #endif
       const auto deadline=Clock::now()+std::chrono::seconds(sec);
       uint32_t last=0;
@@ -500,39 +521,70 @@ int main(int argc,char**argv) {
       while(Clock::now()<deadline && processed<36000 && !result && !userQuit){
         SDL_Event ev{};
 #ifdef RE4_R36S_SHOWCASE
-        bool toggleMenu=false,confirmExit=false,cancelExit=false;
+        bool toggleMenu=false,confirmExit=false,cancelExit=false,directExit=false;
         while(SDL_PollEvent(&ev)){
-          if(ev.type==SDL_QUIT){userQuit=true;break;}
+          if(ev.type==SDL_QUIT){directExit=true;break;}
           if(ev.type==SDL_KEYDOWN && ev.key.repeat==0){
-            if(ev.key.keysym.sym==SDLK_ESCAPE||ev.key.keysym.sym==SDLK_F1)toggleMenu=true;
-            else if(showcaseMenu && (ev.key.keysym.sym==SDLK_RETURN||ev.key.keysym.sym==SDLK_z))confirmExit=true;
-            else if(showcaseMenu && (ev.key.keysym.sym==SDLK_BACKSPACE||ev.key.keysym.sym==SDLK_x))cancelExit=true;
-           }
-          if(ev.type==SDL_CONTROLLERBUTTONDOWN){
-            if(ev.cbutton.button==SDL_CONTROLLER_BUTTON_BACK||ev.cbutton.button==SDL_CONTROLLER_BUTTON_GUIDE)
+            if(ev.key.keysym.sym==SDLK_ESCAPE||ev.key.keysym.sym==SDLK_F1)
               toggleMenu=true;
-            else if(showcaseMenu && ev.cbutton.button==SDL_CONTROLLER_BUTTON_A)confirmExit=true;
-            else if(showcaseMenu && ev.cbutton.button==SDL_CONTROLLER_BUTTON_B)cancelExit=true;
-           }
+            else if(showcaseMenu && (ev.key.keysym.sym==SDLK_RETURN||ev.key.keysym.sym==SDLK_z))
+              confirmExit=true;
+            else if(showcaseMenu && (ev.key.keysym.sym==SDLK_BACKSPACE||ev.key.keysym.sym==SDLK_x))
+              cancelExit=true;
+          }
+          if(ev.type==SDL_CONTROLLERBUTTONDOWN){
+            if(ev.cbutton.button==SDL_CONTROLLER_BUTTON_BACK||
+               ev.cbutton.button==SDL_CONTROLLER_BUTTON_GUIDE)
+              toggleMenu=true;
+            else if(showcaseMenu && ev.cbutton.button==SDL_CONTROLLER_BUTTON_A)
+              confirmExit=true;
+            else if(showcaseMenu && ev.cbutton.button==SDL_CONTROLLER_BUTTON_B)
+              cancelExit=true;
+          }
+          if(ev.type==SDL_JOYBUTTONDOWN){
+            if(diagnoseInput)
+              fprintf(stderr,"R36S_RAW_JOYBUTTON_DOWN DEVICE=%d BUTTON=%u\n",
+                      static_cast<int>(ev.jbutton.which),
+                      static_cast<unsigned>(ev.jbutton.button));
+            if(exitDevice.matchesRaw(ev.jbutton.which,ev.jbutton.button,0)||
+               exitDevice.matchesRaw(ev.jbutton.which,ev.jbutton.button,4))
+              toggleMenu=true;
+            else if(showcaseMenu && exitDevice.matchesRaw(ev.jbutton.which,ev.jbutton.button,2))
+              confirmExit=true;
+            else if(showcaseMenu && exitDevice.matchesRaw(ev.jbutton.which,ev.jbutton.button,3))
+              cancelExit=true;
+          }
         }
-        if(joy){
-          SDL_GameControllerUpdate();
-          const bool chord=SDL_GameControllerGetButton(joy,SDL_CONTROLLER_BUTTON_START) &&
-             SDL_GameControllerGetButton(joy,SDL_CONTROLLER_BUTTON_LEFTSHOULDER) &&
-             SDL_GameControllerGetButton(joy,SDL_CONTROLLER_BUTTON_RIGHTSHOULDER);
-          if(chord) {
-            if(showcaseChord==Clock::time_point{})showcaseChord=Clock::now();
-            if(!showcaseChordHandled && Clock::now()-showcaseChord>=std::chrono::seconds(1)){
-              toggleMenu=true;showcaseChordHandled=true;
-            }
-          }else{showcaseChord=Clock::time_point{};showcaseChordHandled=false;}
+        // Pumped joystick states are checked on every loop, including when
+        // the firmware does not generate SDL_CONTROLLERBUTTONDOWN events.
+        SDL_GameControllerUpdate();
+        SDL_JoystickUpdate();
+        const auto actions=exitGestures.update(
+            exitDevice.poll(),showcaseMenu,Clock::now());
+        toggleMenu |= actions.toggleMenu;
+        confirmExit |= actions.confirmExit;
+        cancelExit |= actions.cancelMenu;
+        directExit |= actions.emergencyExit;
+        // Unconditional emergency exit works even when the overlay is
+        // invisible or A/B is unmapped: hold START alone for 6 seconds,
+        // or START+SELECT for 1.5 seconds.
+        if(directExit){
+          if(diagnoseInput)fprintf(stderr,"R36S_USER_EXIT=EMERGENCY_GESTURE\n");
+          userQuit=true;
+          break;
         }
-        if(toggleMenu){
+        if(diagnoseInput && toggleMenu)
+          fprintf(stderr,"R36S_EXIT_MENU_TOGGLED=1 MENU_WAS_OPEN=%d\n",showcaseMenu?1:0);
+        // Never auto-confirm with the button press that opens the menu.
+        if(toggleMenu) {
           showcaseMenu=!showcaseMenu;
           re4ipc_pause(showcaseMenu?1:0,500);
+        } else if(showcaseMenu && confirmExit) {
+          userQuit=true;
+        } else if(showcaseMenu && cancelExit) {
+          showcaseMenu=false;
+          re4ipc_pause(0,500);
         }
-        if(showcaseMenu && confirmExit)userQuit=true;
-        if(showcaseMenu && cancelExit){showcaseMenu=false;re4ipc_pause(0,500);}
  #else
         while(SDL_PollEvent(&ev)){
           if(ev.type==SDL_QUIT || (ev.type==SDL_KEYDOWN && ev.key.keysym.sym==SDLK_ESCAPE)){
@@ -747,6 +799,9 @@ int main(int argc,char**argv) {
   re4ipc_pad(&pad);
   TRACE_MARK("ipc_shutdown",0,0);
   re4ipc::shutdown(5000);
+#ifdef RE4_R36S_SHOWCASE
+  exitDevice.release();
+#endif
   if(joy)SDL_GameControllerClose(joy);
   TRACE_MARK("egl_cleanup",0,0);
   SDL_GL_DeleteContext(context);
