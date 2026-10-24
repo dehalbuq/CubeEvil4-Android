@@ -1,0 +1,54 @@
+name: R36S - fullscreen stretched 4by3 without debug overlay
+on:
+  push:
+    branches:
+      - chatgpt/r36s-demo-fullscreen-clean-display
+    paths:
+      - "port/r36s/gx-host/**"
+      - "port/android-decomp/app/src/main/cpp/gx_gl.cpp"
+      - "port/android-decomp/app/src/main/cpp/gx_gl.h"
+      - ".github/workflows/r36s-showcase-fullscreen-clean.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  fullscreen-demo-arm64:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install native ARM64 SDL2/GLES tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y cmake ninja-build g++ binutils pkg-config libsdl2-dev libgles-dev
+      - name: Prove sample config overlay preserves original files and memory card
+        run: |
+          set -eux
+          g++ -std=c++17 -Wall -Wextra -O2 -I port/r36s/gx-host \
+            port/r36s/gx-host/test_showcase_clean_data.cpp -o /tmp/test_showcase_clean_data
+          /tmp/test_showcase_clean_data
+      - name: Build R36S fullscreen clean ARM64 frontend
+        run: |
+          set -eux
+          cmake -S port/r36s/gx-host -B port/build/r36s-gx-host -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build port/build/r36s-gx-host --target r36s_game_showcase_full --parallel 2
+          file port/build/r36s-gx-host/r36s_game_showcase_full
+          readelf -h port/build/r36s-gx-host/r36s_game_showcase_full | grep -E 'Class:|Machine:'
+          test -s port/build/r36s-gx-host/r36s_game_showcase_full
+      - name: Package additive fullscreen demo only (without copyrighted game files)
+        run: |
+          set -euo pipefail
+          sh -n port/r36s/gx-host/RE4-R36S-Demonstracao-Tela-Cheia.sh
+          mkdir -p dist/cubeevil4_live_gx
+          cp port/build/r36s-gx-host/r36s_game_showcase_full dist/cubeevil4_live_gx/
+          strip --strip-unneeded dist/cubeevil4_live_gx/r36s_game_showcase_full
+          cp port/r36s/gx-host/RE4-R36S-Demonstracao-Tela-Cheia.sh dist/
+          cp port/r36s/gx-host/README-R36S-FULLSCREEN.md dist/LEIA-ME-R36S-FULLSCREEN.md
+          chmod +x dist/cubeevil4_live_gx/r36s_game_showcase_full dist/RE4-R36S-Demonstracao-Tela-Cheia.sh
+          test "$(find dist -type f | wc -l)" -eq 3
+          ! find dist -type f | grep -Ei 'iso$|gcm$|\.drs$|\.das$|\.rel$|re4_coreproc|libre4_|memcard|card-a.bin'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CubeEvil4-R36S-Demo-Fullscreen-Sem-Debug-ARM64
+          path: dist/
+          retention-days: 14
