@@ -61,6 +61,16 @@ struct GxStats {
   unsigned long long behindSum = 0;
   unsigned behindChecks = 0;
   unsigned behindCount[9] = {};
+#ifdef RE4_R36S_UPLOAD_PROFILE
+  // Host wall-clock around the per-chunk geometry upload calls. May include
+  // GLES-driver waits, so compare matched scene windows and retain glFinish.
+  unsigned long long geometryUploadMicros = 0;
+  unsigned long long geometryUploadBytes = 0;
+  unsigned geometryUploadChunks = 0;
+  unsigned geometryBufferAllocations = 0;
+  unsigned geometryBufferSubDataCalls = 0;
+  unsigned geometryOversizeFallbacks = 0;
+#endif
 #ifdef RE4_R36S_LOW_SPEC
   // Opt-in visual quality reductions for the Mali-G31; never used by stable app.
   unsigned culledFarDraws = 0;

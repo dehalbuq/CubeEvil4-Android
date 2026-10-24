@@ -146,6 +146,11 @@ void reportStats(const re4gx::GxRenderer& r){
           s.chunks,s.draws,s.triangles,s.programs,s.shaderErrors);
   printf("GX_TEXTURES=%u COPIES=%u PRESENTS=%u RESETS=%u\n",
           s.textures,s.displayCopies,s.presents,s.resets);
+#ifdef RE4_R36S_UPLOAD_PROFILE
+  printf("GEOMETRY_UPLOAD_TOTAL CHUNKS=%u BYTES=%llu GL_CALL_TIME_US=%llu ALLOC_CALLS=%u SUBDATA_CALLS=%u OVERSIZE_FALLBACKS=%u\n",
+         s.geometryUploadChunks,s.geometryUploadBytes,s.geometryUploadMicros,
+         s.geometryBufferAllocations,s.geometryBufferSubDataCalls,s.geometryOversizeFallbacks);
+#endif
 #ifdef RE4_R36S_LOW_SPEC
   printf("LOW_SPEC_CULLED_DRAWS=%u CULLED_TRIANGLES=%u DOF_PASSES_SKIPPED=%u\n",
     s.culledFarDraws,s.culledFarTriangles,s.skippedAutofocus);
@@ -172,6 +177,14 @@ int main(int argc,char**argv) {
   int sec=argc>4?atoi(argv[4]):180;
   sec=std::max(5,std::min(sec,600));
   printf("RUN_MODE=GAME_BOOT MAX_SECONDS=%d\n",sec);
+#ifdef RE4_R36S_UPLOAD_PROFILE
+#ifdef RE4_R36S_BUFFER_REUSE
+  puts("GEOMETRY_UPLOAD_MODE=REUSE_SUBDATA VBO_INITIAL=8MiB IBO_INITIAL=1MiB VBO_MAX=16MiB IBO_MAX=4MiB");
+#else
+  puts("GEOMETRY_UPLOAD_MODE=BASELINE_GLBUFFERDATA_EVERY_CHUNK");
+#endif
+  puts("GEOMETRY_UPLOAD_NOTE=GL_wall_clock_may_include_driver_waits_not_pure_DMA_GPU_time");
+#endif
 #ifdef RE4_R36S_SCALABLE_EFB
   printf("SCALABLE_EFB_REQUEST=%s\n",
          getenv("RE4_R36S_RENDER_SCALE")?getenv("RE4_R36S_RENDER_SCALE"):"(unset)");
@@ -300,6 +313,13 @@ int main(int argc,char**argv) {
       auto telemetryStart=Clock::now();
       auto quitHeldAt=Clock::time_point{};
       unsigned lastTelemetryFrames=0;
+#ifdef RE4_R36S_UPLOAD_PROFILE
+      unsigned long long lastGeometryUploadMicros=0;
+      unsigned long long lastGeometryUploadBytes=0;
+      unsigned lastGeometryChunks=0;
+      unsigned lastGeometryAlloc=0;
+      unsigned lastGeometrySubData=0;
+#endif
 #ifdef RE4_R36S_LOW_SPEC
       unsigned lastCulledFarDraws=0,lastDofSkipped=0;
 #endif
@@ -418,6 +438,21 @@ int main(int argc,char**argv) {
             stat.skippedAutofocus-lastDofSkipped,stat.skippedAutofocus);
           lastCulledFarDraws=stat.culledFarDraws;
           lastDofSkipped=stat.skippedAutofocus;
+#endif
+#ifdef RE4_R36S_UPLOAD_PROFILE
+          const unsigned uploadChunks=stat.geometryUploadChunks-lastGeometryChunks;
+          const unsigned long long uploadUs=stat.geometryUploadMicros-lastGeometryUploadMicros;
+          const unsigned long long uploadBytes=stat.geometryUploadBytes-lastGeometryUploadBytes;
+          printf("GEOMETRY_UPLOAD_WINDOW FRAMES=%u CHUNKS=%u BYTES=%llu WALL_US=%llu AVG_MS_PER_CHUNK=%.3f ALLOC_CALLS=%u SUBDATA_CALLS=%u OVERSIZE_FALLBACKS=%u\n",
+             delta, uploadChunks,uploadBytes,uploadUs,uploadChunks?double(uploadUs)/uploadChunks/1000.0:0.0,
+             stat.geometryBufferAllocations-lastGeometryAlloc,
+             stat.geometryBufferSubDataCalls-lastGeometrySubData,
+             stat.geometryOversizeFallbacks);
+          lastGeometryUploadMicros=stat.geometryUploadMicros;
+          lastGeometryUploadBytes=stat.geometryUploadBytes;
+          lastGeometryChunks=stat.geometryUploadChunks;
+          lastGeometryAlloc=stat.geometryBufferAllocations;
+          lastGeometrySubData=stat.geometryBufferSubDataCalls;
 #endif
           memory("FRONTEND");
           coreMemory(corePid);

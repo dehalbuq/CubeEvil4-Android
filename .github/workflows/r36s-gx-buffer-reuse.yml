@@ -1,0 +1,53 @@
+name: R36S - 75pct Mali geometry GL buffer reuse A/B
+on:
+  push:
+    branches:
+      - chatgpt/r36s-75pct-reuse-geometry-buffers
+    paths:
+      - "port/r36s/gx-host/**"
+      - "port/android-decomp/app/src/main/cpp/gx_gl.cpp"
+      - "port/android-decomp/app/src/main/cpp/gx_gl.h"
+      - ".github/workflows/r36s-gx-buffer-reuse.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  cortex-a35-buffer-a-b:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install native ARM64 SDL2 and GLES3 compiler requirements
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y cmake ninja-build g++ binutils pkg-config libsdl2-dev libgles-dev
+      - name: Build paired Mali geometry buffer upload experiments
+        run: |
+          set -eux
+          cmake -S port/r36s/gx-host -B port/build/r36s-gx-host -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build port/build/r36s-gx-host --target r36s_game_a35_geom_base r36s_game_a35_geom_reuse --parallel 2
+          for bin in r36s_game_a35_geom_base r36s_game_a35_geom_reuse; do
+            file "port/build/r36s-gx-host/$bin"
+            readelf -h "port/build/r36s-gx-host/$bin" | grep -E "Class:|Machine:"
+            test -s "port/build/r36s-gx-host/$bin"
+          done
+      - name: Package additive overlay at 480x396 only
+        run: |
+          set -euo pipefail
+          mkdir -p dist/cubeevil4_live_gx
+          cp port/build/r36s-gx-host/r36s_game_a35_geom_base dist/cubeevil4_live_gx/
+          cp port/build/r36s-gx-host/r36s_game_a35_geom_reuse dist/cubeevil4_live_gx/
+          for name in RE4-R36S-75-Upload-GX.sh RE4-R36S-75-Buffer-Original.sh RE4-R36S-75-Buffer-Reutilizavel.sh; do
+            sh -n "port/r36s/gx-host/$name"
+            cp "port/r36s/gx-host/$name" dist/
+            chmod +x "dist/$name"
+          done
+          cp port/r36s/gx-host/README-R36S-75-GEOMETRY-REUSE.md dist/LEIA-ME-R36S-BUFFERS-75.md
+          chmod +x dist/cubeevil4_live_gx/r36s_game_a35_geom_base dist/cubeevil4_live_gx/r36s_game_a35_geom_reuse
+          test "$(find dist -type f | wc -l)" -eq 6
+      - name: Upload GX buffer A/B addon without proprietary game files
+        uses: actions/upload-artifact@v4
+        with:
+          name: CubeEvil4-R36S-75pct-GX-Buffer-Reuse-ARM64
+          path: dist/
+          retention-days: 14
