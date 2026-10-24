@@ -153,6 +153,12 @@ public:
   // (x, y, w, h), upright; rows > 0: only XFB rows top .. top + rows - 1
   // (the letterbox cut off). False when there is none yet.
   bool Present(int x, int y, int w, int h, unsigned top = 0, unsigned rows = 0);
+#ifdef RE4_R36S_SHOWCASE
+  // Showcase-only 4:3 presentation crop, in normalized XFB texture units.
+  // Does NOT alter geometry, HUD layouts, camera projection, or game logic.
+  // x0/y0 are the starting U/V crop and width/height are crop spans.
+  void SetShowcaseDisplayCrop(float x0, float y0, float width, float height);
+#endif
   // EFB colour texture (tests): GameCube coordinates times the scale.
   GLuint EfbColor() const;
   int Scale() const;
