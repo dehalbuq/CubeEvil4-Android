@@ -1,0 +1,101 @@
+name: R36S - restore compiled port binaries
+
+on:
+  push:
+    branches:
+      - chatgpt/r36s-full-binary-restore-kit
+    paths:
+      - "port/r36s/gx-host/README-R36S-RESTORE.md"
+      - "port/r36s/gx-host/RE4-R36S-Verificar-Arquivos.sh"
+      - ".github/workflows/r36s-restaurar-build-completa.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  restore-all-compiled-port-binaries:
+    name: Assemble one R36S install ZIP (without proprietary disc/data/saves)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download complete reconstructed ARM64 core and 114+ modules
+        uses: actions/download-artifact@v4
+        with:
+          name: CubeEvil4-R36S-Live-Core-GX
+          run-id: 40114274602
+          github-token: ${{ github.token }}
+          path: restore/core
+
+      - name: Download previously verified stable GLES renderer and fallback scripts
+        uses: actions/download-artifact@v4
+        with:
+          name: CubeEvil4-R36S-GLES-Estavel-ARM64
+          run-id: 39994893655
+          github-token: ${{ github.token }}
+          path: restore/stable
+
+      - name: Download current fullscreen demonstration with fixed joystick exit
+        uses: actions/download-artifact@v4
+        with:
+          name: CubeEvil4-R36S-Demo-Saida-Corrigida-ARM64
+          run-id: 40114270888
+          github-token: ${{ github.token }}
+          path: restore/demo
+
+      - name: Inspect origins and assemble /roms/ports restore layout
+        shell: bash
+        run: |
+          set -euo pipefail
+          for source in core stable demo; do
+            echo "==== From $source ===="
+            find "restore/$source" -maxdepth 3 -type f | sort | head -30
+          done
+          mkdir -p dist/cubeevil4_live_gx/modules
+          cp -a restore/core/. dist/
+          cp -a restore/stable/. dist/
+          cp -a restore/demo/. dist/
+
+          # Include a read-only installation inspector, not any game data.
+          cp port/r36s/gx-host/RE4-R36S-Verificar-Arquivos.sh dist/
+          cp port/r36s/gx-host/README-R36S-RESTORE.md dist/LEIA-ME-RESTAURO-PORT.md
+          sh -n dist/RE4-R36S-Verificar-Arquivos.sh
+          sh -n dist/RE4-R36S-Demonstracao-Tela-Cheia.sh
+          sh -n dist/RE4-R36S-Estavel.sh
+          chmod +x dist/RE4-R36S-Verificar-Arquivos.sh
+          chmod +x dist/RE4-R36S-Demonstracao-Tela-Cheia.sh
+          chmod +x dist/RE4-R36S-Estavel.sh
+
+          # No placeholder game ROM, no old save, no system library replacement.
+          test ! -e dist/cubeevil4_live_gx/data
+          test ! -e dist/cubeevil4_live_gx/cache
+          for file in re4_coreproc libre4_main.so libre4_host.so libre4_platform.so r36s_game_boot r36s_game_showcase_exitfix; do
+            test -s "dist/cubeevil4_live_gx/$file"
+          done
+          chmod +x dist/cubeevil4_live_gx/re4_coreproc
+          chmod +x dist/cubeevil4_live_gx/r36s_game_boot
+          chmod +x dist/cubeevil4_live_gx/r36s_game_showcase_exitfix
+          modules=$(find dist/cubeevil4_live_gx/modules -maxdepth 1 -type f -name 'libre4_*.so' | wc -l)
+          echo "RECONSTRUCTED_MODULES=$modules"
+          test "$modules" -ge 114
+          file dist/cubeevil4_live_gx/re4_coreproc dist/cubeevil4_live_gx/r36s_game_showcase_exitfix dist/cubeevil4_live_gx/r36s_game_boot
+          readelf -h dist/cubeevil4_live_gx/re4_coreproc | grep 'AArch64'
+          readelf -h dist/cubeevil4_live_gx/r36s_game_showcase_exitfix | grep 'AArch64'
+          readelf -h dist/cubeevil4_live_gx/r36s_game_boot | grep 'AArch64'
+
+          # Reject proprietary disc files, core dumps, memory-card payloads.
+          ! find dist -type f | grep -Ei '\.(iso|gcm|das|drs|rel|gci|raw|sav)$|/sys/(boot|fst)\.bin$|/data/|/memcard/|card-a\.bin$'
+
+          echo "==== Restore package tree ===="
+          find dist -maxdepth 3 -type f | sort | head -50
+          du -sh dist
+
+      - name: Upload single complete R36S compiled install overlay
+        uses: actions/upload-artifact@v4
+        with:
+          name: CubeEvil4-R36S-BINARIOS-RESTAURO-COMPLETO
+          path: dist/
+          retention-days: 14
