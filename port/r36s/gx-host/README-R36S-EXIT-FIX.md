@@ -108,7 +108,7 @@ O workflow usa testes C++ **sem dados de jogo**: tap de SELECT
 abre/fecha uma vez, A/B confirmam/cancelam apenas com menu
 visível, START sozinho 2,5s abre menu / 6s sai, START+SELECT 1,5s
 sai direto, START+L1+R1 abre menu, soltar START zera temporizadores,
-e joystick virtual do SDL valida os raw buttons 8/9.
+e as opções para configurar índices de botões físicos. O runner não possui um joystick R36S real; a captura de eventos físicos precisa ser testada no console.
 
 A compilação AArch64 valida link/arquitetura. **Ainda precisamos
 confirmar no R36S real qual evento de START o DarkOSRE fornece**,
