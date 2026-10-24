@@ -138,3 +138,10 @@ re4_a35_target(r36s_game_showcase TRUE)
 target_compile_definitions(r36s_game_showcase PRIVATE
   RE4_R36S_SCALABLE_EFB=1 RE4_R36S_SHOWCASE=1 NDEBUG=1
 )
+# V2 fullscreen 4:3 stretch + actual GameCube debug-page suppression using
+# a temporary symlink-only view of the user's own extracted disc contents.
+# New executable/launcher never replaces the previously tested demo.
+re4_a35_target(r36s_game_showcase_full TRUE)
+target_compile_definitions(r36s_game_showcase_full PRIVATE
+  RE4_R36S_SCALABLE_EFB=1 RE4_R36S_SHOWCASE=1 NDEBUG=1
+)
