@@ -1,5 +1,5 @@
 #!/bin/sh
-# CubeEvil4 R36S DarkOSRE fullscreen 4:3 gameplay showcase (experimental)
+# CubeEvil4 R36S DarkOSRE fullscreen 4:3 gamepad-exit hotfix showcase
 # Uses the user's installed game data and original coreproc; never bundles them.
 # Native GC debug text is hidden by a temporary virtual data overlay on launch;
 # original data/disc0 files, FST and memory card are never modified.
@@ -7,7 +7,7 @@ set -u
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 1
 CORE="$HERE/cubeevil4_live_gx"
 DATA="$CORE/data"
-for file in r36s_game_showcase_full re4_coreproc libre4_main.so libre4_platform.so; do
+for file in r36s_game_showcase_exitfix re4_coreproc libre4_main.so libre4_platform.so; do
   if [ ! -f "$CORE/$file" ]; then
     echo "CubeEvil4 demo: arquivo ausente: $CORE/$file"
     echo "Esta demonstracao exige uma instalacao do jogo e core compatível."
@@ -45,13 +45,19 @@ case "$DURATION" in *[!0-9]*|"") echo "DURATION_INVALID";exit 2;;esac
 if [ "$DURATION" -lt 60 ] || [ "$DURATION" -gt 7200 ];then
   echo "RE4_SHOWCASE_SECONDS range 60..7200";exit 2
 fi
-chmod +x "$CORE/r36s_game_showcase_full" "$CORE/re4_coreproc" 2>/dev/null || :
+chmod +x "$CORE/r36s_game_showcase_exitfix" "$CORE/re4_coreproc" 2>/dev/null || :
 cd "$CORE" || exit 2
-# Diagnostic log, console spam and fault-address dumps are disabled in
-# the showroom by default. For local debugging only:
-# RE4_SHOWCASE_VERBOSE=1 sh RE4-R36S-Demonstracao-Tela-Cheia.sh
-if [ "${RE4_SHOWCASE_VERBOSE:-0}" = "1" ];then
-  exec ./r36s_game_showcase_full "$CORE" "$CORE/modules" "$DATA" "$DURATION"
+# No on-screen debug, status overlay, FPS counter, or default diagnostics.
+# Optional on-device raw button index discovery, NEVER shown over gameplay:
+# RE4_SHOWCASE_INPUT_DIAG=1 sh RE4-R36S-Demonstracao-Tela-Cheia.sh
+if [ "${RE4_SHOWCASE_INPUT_DIAG:-0}" = "1" ];then
+  mkdir -p "$CORE/logs" || exit 2
+  "./r36s_game_showcase_exitfix" "$CORE" "$CORE/modules" "$DATA" "$DURATION" \
+    >"$CORE/logs/diagnostico_controles_demo_darkos.txt" 2>&1
+  exit $?
 fi
-./r36s_game_showcase_full "$CORE" "$CORE/modules" "$DATA" "$DURATION" >/dev/null 2>&1
+if [ "${RE4_SHOWCASE_VERBOSE:-0}" = "1" ];then
+  exec ./r36s_game_showcase_exitfix "$CORE" "$CORE/modules" "$DATA" "$DURATION"
+fi
+./r36s_game_showcase_exitfix "$CORE" "$CORE/modules" "$DATA" "$DURATION" >/dev/null 2>&1
 exit $?
