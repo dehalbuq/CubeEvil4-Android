@@ -5,6 +5,9 @@
 #include "re4_gx_frame.h"
 
 #include <algorithm>
+#ifdef RE4_R36S_UPLOAD_PROFILE
+#include <chrono>
+#endif
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -280,6 +283,40 @@ struct GxRenderer::Impl {
   bool holdXfb = false;  // this chunk's display copy is not shown (RE4_GX_CHUNK_HOLD)
   bool viBlack = false;  // the VI shows black (RE4_GX_CHUNK_BLACK, VISetBlack): Present draws black
   GLuint vao = 0, vbo = 0, ibo = 0;
+#ifdef RE4_R36S_BUFFER_REUSE
+  std::size_t reuseVertexCapacity = 0, reuseIndexCapacity = 0;
+  // With mode-5 glFinish before every SDL swap, the previous GX chunk's
+  // drawing is complete before the next GX buffer update. This permits
+  // glBufferSubData reuse without risking writing a still-in-flight draw.
+  // 8 MiB vertex + 1 MiB index are a modest fixed warm-start on 1 GiB RAM.
+  void UploadReusableGeometry(GLenum binding, std::size_t countBytes,
+                              const void *data, std::size_t &capacity,
+                              std::size_t initial, std::size_t limit) {
+    const std::size_t required = std::max<std::size_t>(4, countBytes);
+    if (required > limit) {
+      // Genuine very large chunks stay on the old exact-size upload path.
+      glBufferData(binding, static_cast<GLsizeiptr>(required),
+                   countBytes ? data : nullptr, GL_STREAM_DRAW);
+      capacity = required;
+      stats.geometryBufferAllocations++;
+      stats.geometryOversizeFallbacks++;
+      return;
+    }
+    if (capacity < required) {
+      std::size_t newCapacity = std::max(capacity, initial);
+      while (newCapacity < required)
+        newCapacity *= 2;
+      newCapacity = std::min(newCapacity, limit);
+      glBufferData(binding, static_cast<GLsizeiptr>(newCapacity), nullptr, GL_STREAM_DRAW);
+      capacity = newCapacity;
+      stats.geometryBufferAllocations++;
+    }
+    if (countBytes) {
+      glBufferSubData(binding, 0, static_cast<GLsizeiptr>(countBytes), data);
+      stats.geometryBufferSubDataCalls++;
+    }
+  }
+#endif
   GLuint xfUbo = 0, pxUbo = 0;
   GLuint copyProgram = 0, presentProgram = 0, paletteProgram = 0;
   GLint presentRows = -1;
@@ -2684,11 +2721,35 @@ void GxRenderer::Run(const Re4GxChunk &chunk) {
     m.DropTextures();
   }
   // this chunk's vertices and indices
+#ifdef RE4_R36S_UPLOAD_PROFILE
+  const auto geometryUploadStart = std::chrono::steady_clock::now();
+#endif
   glBindVertexArray(m.vao);
   glBindBuffer(GL_ARRAY_BUFFER, m.vbo);
+#ifdef RE4_R36S_BUFFER_REUSE
+  m.UploadReusableGeometry(GL_ARRAY_BUFFER, chunk.vertexBytes, chunk.vertices,
+                           m.reuseVertexCapacity, 8u << 20, 16u << 20);
+#else
   glBufferData(GL_ARRAY_BUFFER, chunk.vertexBytes ? chunk.vertexBytes : 4, chunk.vertices, GL_STREAM_DRAW);
+#endif
   glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m.ibo);
+#ifdef RE4_R36S_BUFFER_REUSE
+  m.UploadReusableGeometry(GL_ELEMENT_ARRAY_BUFFER,
+                           static_cast<std::size_t>(chunk.indexCount) * 2u,
+                           chunk.indices, m.reuseIndexCapacity, 1u << 20, 4u << 20);
+#else
   glBufferData(GL_ELEMENT_ARRAY_BUFFER, chunk.indexCount ? chunk.indexCount * 2 : 4, chunk.indices, GL_STREAM_DRAW);
+#endif
+#ifdef RE4_R36S_UPLOAD_PROFILE
+#ifndef RE4_R36S_BUFFER_REUSE
+  m.stats.geometryBufferAllocations += 2;
+#endif
+  m.stats.geometryUploadChunks++;
+  m.stats.geometryUploadBytes += chunk.vertexBytes + static_cast<std::uint64_t>(chunk.indexCount) * 2u;
+  m.stats.geometryUploadMicros += static_cast<unsigned long long>(
+      std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::steady_clock::now() - geometryUploadStart).count());
+#endif
   // the app drew the screen since the last chunk: a new pass
   m.efbLeft = true;
   m.BindFbo(m.DrawFbo());
