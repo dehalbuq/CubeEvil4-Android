@@ -114,3 +114,17 @@ re4_a35_target(r36s_game_a35_half TRUE)
 # scales; existing A35 half/full binaries are NOT touched.
 re4_a35_target(r36s_game_a35_scalable TRUE)
 target_compile_definitions(r36s_game_a35_scalable PRIVATE RE4_R36S_SCALABLE_EFB=1)
+
+# R36S Mali-G31 A/B: glBufferData every GX chunk versus persistent-size
+# geometry VBO/IBO reused with glBufferSubData. Both variants run at 480x396,
+# same Cortex-A35 -O3/LTO and GL driver timing counters. Unlike the uniform
+# ring this relies on the already-proven mode-5 glFinish at every presentation.
+# Neither binary replaces the stable renderer or previous A35 profiles.
+re4_a35_target(r36s_game_a35_geom_base TRUE)
+target_compile_definitions(r36s_game_a35_geom_base PRIVATE
+  RE4_R36S_SCALABLE_EFB=1 RE4_R36S_UPLOAD_PROFILE=1
+)
+re4_a35_target(r36s_game_a35_geom_reuse TRUE)
+target_compile_definitions(r36s_game_a35_geom_reuse PRIVATE
+  RE4_R36S_SCALABLE_EFB=1 RE4_R36S_UPLOAD_PROFILE=1 RE4_R36S_BUFFER_REUSE=1
+)
