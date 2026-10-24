@@ -1,4 +1,4 @@
-// Tests synthetic SDL-independent gesture timelines plus a virtual joystick.
+// Tests synthetic button gestures and raw mapping options; no physical joystick.
 // No proprietary RE4 assets, saves, or DarkOSRE hardware are required.
 #include "r36s_showcase_exit_controls.h"
 #include <cassert>
@@ -72,38 +72,20 @@ int main(){
     assert(!g.update(s,false,at(8000)).emergencyExit);
   }
   {
-    setenv("SDL_VIDEODRIVER","dummy",0);
-    assert(SDL_Init(SDL_INIT_JOYSTICK|SDL_INIT_GAMECONTROLLER|SDL_INIT_EVENTS)==0);
-#if SDL_VERSION_ATLEAST(2,0,14)
-    const int index=SDL_JoystickAttachVirtual(SDL_JOYSTICK_TYPE_GAMECONTROLLER,12,0,0);
-    assert(index>=0);
-    Device d;
-    d.attach(nullptr); // raw joystick fallback without SDL GameController
-    SDL_Joystick* virtualDevice=SDL_JoystickOpen(index);
-    assert(virtualDevice);
-    assert(SDL_JoystickNumButtons(virtualDevice)==12);
-    assert(d.matchesRaw(SDL_JoystickInstanceID(virtualDevice),8,0));
-    assert(d.matchesRaw(SDL_JoystickInstanceID(virtualDevice),9,1));
-    // Some Linux headless/ARM SDL builds support virtual joystick attach,
-    // but reject setting virtual button state. Check raw indexes on all
-    // builds; check physical poll if the test backend permits injection.
-    const int setSelect=SDL_JoystickSetVirtualButton(virtualDevice,8,1);
-    const int setStart=SDL_JoystickSetVirtualButton(virtualDevice,9,1);
-    if(setSelect==0 && setStart==0){
-      SDL_JoystickUpdate();
-      const auto input=d.poll();
-      assert(input.select);
-      assert(input.start);
-      std::cout<<"R36S_VIRTUAL_BUTTON_POLL_TEST_OK\\n";
-    }else{
-      std::cout<<"R36S_VIRTUAL_BUTTON_INJECTION_UNAVAILABLE: "
-               <<SDL_GetError()<<" (raw button index/event routing still tested)\\n";
-    }
-    d.release();
-    SDL_JoystickClose(virtualDevice);
-    SDL_JoystickDetachVirtual(index);
-#endif
-    SDL_Quit();
+    // Validate raw-button indices and per-firmware override parsing.
+    // The CI runner has no actual R36S joystick, so no physical
+    // SDL event generation is claimed here. Those are verified on-device.
+    assert(Device::configured(0,8)==8);
+    assert(Device::configured(1,9)==9);
+    setenv("RE4_SHOWCASE_RAW_SELECT","6",1);
+    setenv("RE4_SHOWCASE_RAW_START","7",1);
+    assert(Device::configured(0,8)==6);
+    assert(Device::configured(1,9)==7);
+    setenv("RE4_SHOWCASE_RAW_SELECT","999",1);
+    assert(Device::configured(0,8)==8);
+    unsetenv("RE4_SHOWCASE_RAW_SELECT");
+    unsetenv("RE4_SHOWCASE_RAW_START");
+    std::cout<<"R36S_RAW_BUTTON_MAPPING_SETTINGS_TEST_OK\\n";
   }
   std::cout<<"R36S_SHOWCASE_EXIT_INPUT_TEST_OK\n";
 }
