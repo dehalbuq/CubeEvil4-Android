@@ -128,3 +128,13 @@ re4_a35_target(r36s_game_a35_geom_reuse TRUE)
 target_compile_definitions(r36s_game_a35_geom_reuse PRIVATE
   RE4_R36S_SCALABLE_EFB=1 RE4_R36S_UPLOAD_PROFILE=1 RE4_R36S_BUFFER_REUSE=1
 )
+
+# Public-facing experimental R36S showcase: no per-frame diagnostic tracing,
+# no diagnostic GL timer/fences, real SDL audio, exit menu and 4:3 display.
+# Only the thin GX frontend is compiled: does not contain or distribute game
+# assets, original coreproc or reconstructed proprietary game modules.
+# Build for the actual RK3326 Cortex-A35. This is independent of debug targets.
+re4_a35_target(r36s_game_showcase TRUE)
+target_compile_definitions(r36s_game_showcase PRIVATE
+  RE4_R36S_SCALABLE_EFB=1 RE4_R36S_SHOWCASE=1 NDEBUG=1
+)

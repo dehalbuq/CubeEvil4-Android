@@ -320,6 +320,11 @@ struct GxRenderer::Impl {
   GLuint xfUbo = 0, pxUbo = 0;
   GLuint copyProgram = 0, presentProgram = 0, paletteProgram = 0;
   GLint presentRows = -1;
+#ifdef RE4_R36S_SHOWCASE
+  GLint presentCols = -1;
+  float displayX = 0.0f, displayY = 0.0f;
+  float displayW = 1.0f, displayH = 1.0f;
+#endif
   GLint copyMode = -1, copyRect = -1, copySize = -1, copyHalf = -1, copyGain = -1;
   GLint paletteSize = -1, paletteKind = -1, paletteFormat = -1;
   GLuint quadVao = 0;
@@ -2450,9 +2455,15 @@ struct GxRenderer::Impl {
         "  o = texelFetch(pal, ivec2(index % w, index / w), 0);\n"
         "}\n";
     // rows: XFB texture rows shown (offset, span; 0..1), row 0 at the top
+#ifdef RE4_R36S_SHOWCASE
+    static const char kPresentFs[] = "#version 300 es\nprecision highp float;\n"
+                                     "uniform sampler2D src;\nuniform vec2 rows;\nuniform vec2 cols;\nin vec2 vUv;\nout vec4 o;\n"
+                                     "void main() { o = vec4(texture(src, vec2(cols.x + vUv.x * cols.y, rows.x + (1.0 - vUv.y) * rows.y)).rgb, 1.0); }\n";
+#else
     static const char kPresentFs[] = "#version 300 es\nprecision highp float;\n"
                                      "uniform sampler2D src;\nuniform vec2 rows;\nin vec2 vUv;\nout vec4 o;\n"
                                      "void main() { o = vec4(texture(src, vec2(vUv.x, rows.x + (1.0 - vUv.y) * rows.y)).rgb, 1.0); }\n";
+#endif
     std::string log;
     copyProgram = Link(kQuadVs, kCopyFs, &log);
     if (!copyProgram) {
@@ -2485,6 +2496,9 @@ struct GxRenderer::Impl {
     glUseProgram(presentProgram);
     glUniform1i(glGetUniformLocation(presentProgram, "src"), 0);
     presentRows = glGetUniformLocation(presentProgram, "rows");
+#ifdef RE4_R36S_SHOWCASE
+    presentCols = glGetUniformLocation(presentProgram, "cols");
+#endif
     // d2: the EFB drawn back from the other set of textures, colour and depth texel for texel
     // (the depth as sampled, no arithmetic: the 24 bits come back as they were)
     static const char kRestoreFs[] = "#version 300 es\nprecision highp float;\n"
@@ -2682,7 +2696,9 @@ bool GxRenderer::Init(int scale, std::string *error) {
   for (auto &b : m.bound)
     b.id = m.whiteTex;
   m.StreamInit();
+#ifndef RE4_R36S_SHOWCASE
   m.TimerInit();
+#endif
   if (!m.MakeUtilityPrograms(error))
     return false;
   // d2: does this device keep the EFB over a pass's end, drawn back? Else own buffers
@@ -2819,7 +2835,11 @@ void GxRenderer::Run(const Re4GxChunk &chunk) {
     at += 1 + n;
   }
   m.TimerEnd();
+#ifndef RE4_R36S_SHOWCASE
+  // Diagnostics only. The uniform-buffer streamFence[] synchronization stays
+  // enabled; the host still uses mandatory glFinish in mode 5.
   m.FenceAfterChunk();
+#endif
   // leave GL as the app's other renderers expect it
   glBindVertexArray(0);
   for (GLuint unit = 0; unit < 8; unit++)
@@ -2860,10 +2880,19 @@ bool GxRenderer::Present(int x, int y, int w, int h, unsigned top, unsigned rows
   glViewport(x, y, w, h);
   glUseProgram(m.presentProgram);
   const float lines = static_cast<float>(m.xfbHeight ? m.xfbHeight : 1);
+#ifdef RE4_R36S_SHOWCASE
+  const float baseY = (rows == 0 || top + rows > m.xfbHeight)
+      ? 0.0f : static_cast<float>(top) / lines;
+  const float baseSpan = (rows == 0 || top + rows > m.xfbHeight)
+      ? 1.0f : static_cast<float>(rows) / lines;
+  glUniform2f(m.presentRows, baseY + baseSpan * m.displayY, baseSpan * m.displayH);
+  glUniform2f(m.presentCols, m.displayX, m.displayW);
+#else
   if (rows == 0 || top + rows > m.xfbHeight)
     glUniform2f(m.presentRows, 0.0f, 1.0f);
   else
     glUniform2f(m.presentRows, static_cast<float>(top) / lines, static_cast<float>(rows) / lines);
+#endif
   glActiveTexture(GL_TEXTURE0);
   glBindTexture(GL_TEXTURE_2D, m.xfbTex);
   glBindSampler(0, 0);
@@ -2877,6 +2906,21 @@ bool GxRenderer::Present(int x, int y, int w, int h, unsigned top, unsigned rows
 }
 
 GLuint GxRenderer::EfbColor() const { return impl_->efbColor; }
+
+#ifdef RE4_R36S_SHOWCASE
+void GxRenderer::SetShowcaseDisplayCrop(float x0, float y0, float width, float height) {
+  // UV crop only, not camera or game engine projection.
+  if (!std::isfinite(x0) || !std::isfinite(y0) ||
+      !std::isfinite(width) || !std::isfinite(height) ||
+      x0 < 0.0f || y0 < 0.0f || width <= 0.0f || height <= 0.0f ||
+      x0 + width > 1.000001f || y0 + height > 1.000001f)
+    return;
+  impl_->displayX = x0;
+  impl_->displayY = y0;
+  impl_->displayW = width;
+  impl_->displayH = height;
+}
+#endif
 
 void GxRenderer::SetOptions(const GxOptions &options) { impl_->options = options; }
 

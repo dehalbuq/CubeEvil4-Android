@@ -17,6 +17,21 @@
 #include <string>
 #include <sys/stat.h>
 #include <cstdint>
+#ifdef RE4_R36S_SHOWCASE
+#include <array>
+#include <atomic>
+#include <thread>
+#endif
+
+#ifdef RE4_R36S_SHOWCASE
+// Hard-disable the heavyweight debug telemetry for the public-facing
+// front-end. Crash and error messages still use fprintf(stderr,...).
+#define printf(...) ((int)0)
+#define puts(...) ((int)0)
+#define TRACE_MARK(...) ((void)0)
+#else
+#define TRACE_MARK(...) r36s_crash::mark(__VA_ARGS__)
+#endif
 
 namespace {
 using Clock=std::chrono::steady_clock;
@@ -103,8 +118,9 @@ static int8_t axis(Sint16 v,int limit){
   int n=int(v)*limit/32767;
   return (int8_t)std::max(-limit,std::min(limit,n));
 }
-void updatePad(SDL_GameController* joy){
+void updatePad(SDL_GameController* joy, bool menu=false){
   Re4CorePad pad{};
+  if(menu){re4ipc_pad(&pad);return;}
   if(joy){
     SDL_GameControllerUpdate();
     auto key=[joy](SDL_GameControllerButton b){return SDL_GameControllerGetButton(joy,b)!=0;};
@@ -156,17 +172,139 @@ void reportStats(const re4gx::GxRenderer& r){
     s.culledFarDraws,s.culledFarTriangles,s.skippedAutofocus);
 #endif
 }
+
+#ifdef RE4_R36S_SHOWCASE
+// Presentation choices for RE4's baked letterbox. A real 4:3 camera FOV
+// needs invasive changes to the original game; this only changes the XFB UVs.
+void showcaseAspect(re4gx::GxRenderer& renderer,int mode){
+  if(mode==0)renderer.SetShowcaseDisplayCrop(.125f,.125f,.75f,.75f); // proportionate 4:3 zoom, crops HUD edges
+  else if(mode==1)renderer.SetShowcaseDisplayCrop(0.f,.125f,1.f,.75f); // fills screen, stretches vertically
+  else renderer.SetShowcaseDisplayCrop(0.f,0.f,1.f,1.f); // original GameCube output and bars
+}
+
+// Sound is PCM 32000 Hz, S16 stereo in the core IPC ring (core_ipc.cpp).
+// Never read it on the graphics thread: GX rendering can take 150+ ms/frame.
+// SDL_QueueAudio is fed independently to keep latency below ~125ms.
+struct ShowcaseAudio {
+  SDL_AudioDeviceID dev=0;
+  std::atomic<bool> done{false};
+  std::thread worker;
+  void start(){
+    if(SDL_InitSubSystem(SDL_INIT_AUDIO)!=0)
+      fprintf(stderr,"SHOWCASE_AUDIO_INIT_FAILED=%s\n",SDL_GetError());
+    else {
+      SDL_AudioSpec wanted{},got{};
+      wanted.freq=32000; wanted.format=AUDIO_S16SYS;
+      wanted.channels=2; wanted.samples=512; wanted.callback=nullptr;
+      dev=SDL_OpenAudioDevice(nullptr,0,&wanted,&got,0);
+      if(!dev)fprintf(stderr,"SHOWCASE_AUDIO_DEVICE_FAILED=%s\n",SDL_GetError());
+      else SDL_PauseAudioDevice(dev,0);
+    }
+    worker=std::thread([this] {
+      std::array<int16_t,512> pcm{};  // 256 stereo frames = 8 ms
+      constexpr Uint32 kQueueCap=32000u*2u*2u/8u; // 125 ms
+      while(!done.load(std::memory_order_relaxed)){
+        if(dev && SDL_GetQueuedAudioSize(dev)>kQueueCap){
+          SDL_Delay(4);continue;
+        }
+        re4ipc_audio(pcm.data(),256);  // fills unavailable frames with silence
+        if(dev && SDL_QueueAudio(dev,pcm.data(),static_cast<Uint32>(pcm.size()*sizeof(pcm[0])))!=0)
+          SDL_Delay(10);
+        if(!dev)SDL_Delay(8);  // even without ALSA, drain ring to avoid stopping game
+      }
+    });
+  }
+  void stopAndClose(){
+    done.store(true,std::memory_order_relaxed);
+    if(worker.joinable())worker.join();
+    if(dev){SDL_ClearQueuedAudio(dev);SDL_CloseAudioDevice(dev);dev=0;}
+  }
+  ~ShowcaseAudio(){stopAndClose();}
+};
+
+// Embedded bitmap font for the exit menu. No external fonts or SDL_ttf
+// dependencies, no proprietary artwork, and no code executes in normal play.
+using ShowcaseGlyph=std::array<unsigned char,7>;
+const ShowcaseGlyph& glyph(char ch){
+  static const ShowcaseGlyph blank{};
+  switch(ch){
+    case 'A': {static const ShowcaseGlyph g{14,17,17,31,17,17,17};return g;}
+    case 'B': {static const ShowcaseGlyph g{30,17,17,30,17,17,30};return g;}
+    case 'C': {static const ShowcaseGlyph g{14,17,16,16,16,17,14};return g;}
+    case 'D': {static const ShowcaseGlyph g{30,17,17,17,17,17,30};return g;}
+    case 'E': {static const ShowcaseGlyph g{31,16,16,30,16,16,31};return g;}
+    case 'F': {static const ShowcaseGlyph g{31,16,16,30,16,16,16};return g;}
+    case 'G': {static const ShowcaseGlyph g{14,17,16,23,17,17,15};return g;}
+    case 'I': {static const ShowcaseGlyph g{31,4,4,4,4,4,31};return g;}
+    case 'J': {static const ShowcaseGlyph g{7,2,2,2,18,18,12};return g;}
+    case 'L': {static const ShowcaseGlyph g{16,16,16,16,16,16,31};return g;}
+    case 'M': {static const ShowcaseGlyph g{17,27,21,21,17,17,17};return g;}
+    case 'N': {static const ShowcaseGlyph g{17,25,21,19,17,17,17};return g;}
+    case 'O': {static const ShowcaseGlyph g{14,17,17,17,17,17,14};return g;}
+    case 'P': {static const ShowcaseGlyph g{30,17,17,30,16,16,16};return g;}
+    case 'R': {static const ShowcaseGlyph g{30,17,17,30,20,18,17};return g;}
+    case 'S': {static const ShowcaseGlyph g{15,16,16,14,1,1,30};return g;}
+    case 'T': {static const ShowcaseGlyph g{31,4,4,4,4,4,4};return g;}
+    case 'U': {static const ShowcaseGlyph g{17,17,17,17,17,17,14};return g;}
+    case 'V': {static const ShowcaseGlyph g{17,17,17,17,17,10,4};return g;}
+    case 'X': {static const ShowcaseGlyph g{17,17,10,4,10,17,17};return g;}
+    case 'Y': {static const ShowcaseGlyph g{17,17,10,4,4,4,4};return g;}
+    case '?': {static const ShowcaseGlyph g{14,17,1,2,4,0,4};return g;}
+    case ':': {static const ShowcaseGlyph g{0,4,4,0,4,4,0};return g;}
+    case '+': {static const ShowcaseGlyph g{0,4,4,31,4,4,0};return g;}
+    case '3': {static const ShowcaseGlyph g{30,1,1,14,1,1,30};return g;}
+    case '4': {static const ShowcaseGlyph g{2,6,10,18,31,2,2};return g;}
+    default:return blank;
+  }
+}
+void showcaseRect(int x,int y,int width,int height,float r,float g,float b){
+  if(x<0||y<0||width<=0||height<=0||x+width>kW||y+height>kH)return;
+  glScissor(x,kH-y-height,width,height);
+  glClearColor(r,g,b,1);
+  glClear(GL_COLOR_BUFFER_BIT);
+}
+void showcaseText(int x,int y,int factor,const char* str,float r,float g,float b){
+  for(const char* ch=str;*ch;++ch,x+=factor*6){
+    const auto &gph=glyph(*ch);
+    for(int row=0;row<7;++row)
+      for(int col=0;col<5;++col)
+        if(gph[row]&(16>>col))
+          showcaseRect(x+col*factor,y+row*factor,factor,factor,r,g,b);
+  }
+}
+void showcaseExitOverlay(int displayMode){
+  glBindFramebuffer(GL_FRAMEBUFFER,0);
+  glDisable(GL_BLEND);
+  glDisable(GL_DEPTH_TEST);
+  glDisable(GL_CULL_FACE);
+  glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);
+  glEnable(GL_SCISSOR_TEST);
+  showcaseRect(80,142,480,194,.02f,.025f,.04f);
+  showcaseRect(80,142,480,4,.83f,.63f,.18f);
+  showcaseRect(80,332,480,4,.83f,.63f,.18f);
+  showcaseText(166,162,4,"SAIR DO JOGO?",1.f,.85f,.4f);
+  showcaseText(144,210,3,"A: SAIR",.5f,1.f,.5f);
+  showcaseText(335,210,3,"B: VOLTAR",1.f,.55f,.55f);
+  showcaseText(132,268,3,"Y: TELA",.75f,.85f,1.f);
+  showcaseText(323,268,2,displayMode==0?"ZOOM 4:3":
+                              displayMode==1?"ESTICADO 4:3":"ORIGINAL",.9f,.9f,.9f);
+  glDisable(GL_SCISSOR_TEST);
+}
+#endif
+
 } // namespace
 
 int main(int argc,char**argv) {
   setvbuf(stdout,nullptr,_IONBF,0);
   setvbuf(stderr,nullptr,_IONBF,0);
-  r36s_crash::mark("installing_sigaction",0,0);
+  TRACE_MARK("installing_sigaction",0,0);
+#ifndef RE4_R36S_SHOWCASE
   if(!r36s_crash::install()){
     fprintf(stderr,"CRASH_TRACE_INSTALL_WARNING=unavailable\n");
   }else{
     fprintf(stderr,"CRASH_TRACE_INSTALLED=YES (PC,LR,stage,maps)\n");
   }
+#endif
   puts("CUBEEVIL4_R36S_FIRST_REAL_GAME_DATA_BOOT");
   if(argc<4){
     fprintf(stderr,"usage: r36s_game_boot COREFOLDER MODULESFOLDER DATADIR [SECONDS]\n");
@@ -175,7 +313,14 @@ int main(int argc,char**argv) {
   const std::string coreDir=argv[1],modules=argv[2],dataDir=argv[3];
   if(!checkGameData(dataDir))return 20;
   int sec=argc>4?atoi(argv[4]):180;
+#ifdef RE4_R36S_SHOWCASE
+  // A practical demo is not cut off after 180 seconds; maximum 2h safeguards
+  // forgotten unattended processes. The exit menu works at any time.
+  sec=argc>4?atoi(argv[4]):7200;
+  sec=std::max(60,std::min(sec,7200));
+#else
   sec=std::max(5,std::min(sec,600));
+#endif
   printf("RUN_MODE=GAME_BOOT MAX_SECONDS=%d\n",sec);
 #ifdef RE4_R36S_UPLOAD_PROFILE
 #ifdef RE4_R36S_BUFFER_REUSE
@@ -229,7 +374,11 @@ int main(int argc,char**argv) {
     getenv("RE4_GX_UNIFORM_STREAM")?getenv("RE4_GX_UNIFORM_STREAM"):"(default)");
   // Ensure real game boot; never accidentally run the synthetic probe here.
   unsetenv("RE4_CORE_TEST_ENTRY");
+#ifdef RE4_R36S_SHOWCASE
+  setenv("RE4_CORE_IPC_CHECK","0",1);
+#else
   setenv("RE4_CORE_IPC_CHECK","1",1);
+#endif
   re4ipc::Spawn spawn;
   spawn.program=coreDir+"/re4_coreproc";
   // core_ipc_client.cpp deliberately strips inherited LD_LIBRARY_PATH
@@ -238,7 +387,7 @@ int main(int argc,char**argv) {
   spawn.helloSeconds=30;
   re4ipc::configure(spawn);
   memory("START");
-  r36s_crash::mark("ipc_reserve",0,0);
+  TRACE_MARK("ipc_reserve",0,0);
   if(re4ipc_reserve(dataDir.c_str(),modules.c_str())!=1){
     fprintf(stderr,"CORE_IPC_RESERVE_FAILED=%s\n",re4ipc_message());
     re4ipc::shutdown(1000);
@@ -247,7 +396,7 @@ int main(int argc,char**argv) {
   Re4CorePad pad{};
   // Keep controls neutral until the first SDL input poll.
   re4ipc_pad(&pad);
-  r36s_crash::mark("core_start",0,0);
+  TRACE_MARK("core_start",0,0);
   if(re4ipc_start()!=1){
     fprintf(stderr,"CORE_IPC_START_FAILED=%s\n",re4ipc_message());
     re4ipc::shutdown(1000);
@@ -255,7 +404,7 @@ int main(int argc,char**argv) {
   }
   const int corePid=re4ipc::pid();
   printf("CORE_PID=%d\n",corePid);
-  r36s_crash::mark("sdl_init",0,0);
+  TRACE_MARK("sdl_init",0,0);
   if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_EVENTS|SDL_INIT_GAMECONTROLLER)!=0) {
     fprintf(stderr,"SDL_ERROR=%s\n",SDL_GetError());
     re4ipc::shutdown(3000);return 5;
@@ -272,7 +421,7 @@ int main(int argc,char**argv) {
   SDL_Window* window=SDL_CreateWindow("CubeEvil4 IPC GX R36S",SDL_WINDOWPOS_CENTERED,
      SDL_WINDOWPOS_CENTERED,kW,kH,SDL_WINDOW_SHOWN|SDL_WINDOW_OPENGL);
   if(!window){fprintf(stderr,"SDL_WINDOW_ERROR=%s\n",SDL_GetError());SDL_Quit();re4ipc::shutdown(3000);return 6;}
-  r36s_crash::mark("egl_create",0,0);
+  TRACE_MARK("egl_create",0,0);
   SDL_GLContext context=SDL_GL_CreateContext(window);
   if(!context){
     fprintf(stderr,"SDL_CONTEXT_ERROR=%s\n",SDL_GetError());
@@ -291,7 +440,7 @@ int main(int argc,char**argv) {
     opts.samples=1;opts.tiledMsaa=false;
     renderer.SetOptions(opts);
     std::string error;
-    r36s_crash::mark("renderer_init",0,0);
+    TRACE_MARK("renderer_init",0,0);
     if(!renderer.Init(1,&error)){
       fprintf(stderr,"GX_INIT_ERROR=%s\n",error.c_str());
       result=8;
@@ -305,6 +454,21 @@ int main(int argc,char**argv) {
       printf("SHADER_CACHE_ENABLED=%d\n",binaryCacheEnabled?1:0);
       printf("SHADER_CACHE_DIR=%s\n",shaderDir && *shaderDir?shaderDir:"(not configured)");
       puts("SHADER_CACHE_NOTE=first_run_compiles_new_shaders_next_run_can_load_binary_cache");
+#endif
+#ifdef RE4_R36S_SHOWCASE
+      // Default to geometric 4:3 zoom. A HUD-safe stretch and the original
+      // letterbox are selectable in the exit/menu overlay with Y.
+      int displayMode=0;
+      if(const char* style=getenv("RE4_SHOWCASE_ASPECT")) {
+        if(strcmp(style,"stretch")==0)displayMode=1;
+        else if(strcmp(style,"original")==0)displayMode=2;
+      }
+      showcaseAspect(renderer,displayMode);
+      ShowcaseAudio showcaseAudio;
+      showcaseAudio.start();
+      bool showcaseMenu=false;
+      auto showcaseChord=Clock::time_point{};
+      bool showcaseChordHandled=false;
 #endif
       const auto deadline=Clock::now()+std::chrono::seconds(sec);
       uint32_t last=0;
@@ -328,12 +492,52 @@ int main(int argc,char**argv) {
       printf("SAFE_EXIT=ESC_OR_SDL_QUIT_OR_HOLD_SELECT_PLUS_START_2_SECONDS\n");
       while(Clock::now()<deadline && processed<36000 && !result && !userQuit){
         SDL_Event ev{};
+#ifdef RE4_R36S_SHOWCASE
+        bool toggleMenu=false,confirmExit=false,cancelExit=false,cycleAspect=false;
+        while(SDL_PollEvent(&ev)){
+          if(ev.type==SDL_QUIT){userQuit=true;break;}
+          if(ev.type==SDL_KEYDOWN && ev.key.repeat==0){
+            if(ev.key.keysym.sym==SDLK_ESCAPE||ev.key.keysym.sym==SDLK_F1)toggleMenu=true;
+            else if(showcaseMenu && (ev.key.keysym.sym==SDLK_RETURN||ev.key.keysym.sym==SDLK_z))confirmExit=true;
+            else if(showcaseMenu && (ev.key.keysym.sym==SDLK_BACKSPACE||ev.key.keysym.sym==SDLK_x))cancelExit=true;
+            else if(showcaseMenu && ev.key.keysym.sym==SDLK_y)cycleAspect=true;
+          }
+          if(ev.type==SDL_CONTROLLERBUTTONDOWN){
+            if(ev.cbutton.button==SDL_CONTROLLER_BUTTON_BACK||ev.cbutton.button==SDL_CONTROLLER_BUTTON_GUIDE)
+              toggleMenu=true;
+            else if(showcaseMenu && ev.cbutton.button==SDL_CONTROLLER_BUTTON_A)confirmExit=true;
+            else if(showcaseMenu && ev.cbutton.button==SDL_CONTROLLER_BUTTON_B)cancelExit=true;
+            else if(showcaseMenu && ev.cbutton.button==SDL_CONTROLLER_BUTTON_Y)cycleAspect=true;
+          }
+        }
+        if(joy){
+          SDL_GameControllerUpdate();
+          const bool chord=SDL_GameControllerGetButton(joy,SDL_CONTROLLER_BUTTON_START) &&
+             SDL_GameControllerGetButton(joy,SDL_CONTROLLER_BUTTON_LEFTSHOULDER) &&
+             SDL_GameControllerGetButton(joy,SDL_CONTROLLER_BUTTON_RIGHTSHOULDER);
+          if(chord) {
+            if(showcaseChord==Clock::time_point{})showcaseChord=Clock::now();
+            if(!showcaseChordHandled && Clock::now()-showcaseChord>=std::chrono::seconds(1)){
+              toggleMenu=true;showcaseChordHandled=true;
+            }
+          }else{showcaseChord=Clock::time_point{};showcaseChordHandled=false;}
+        }
+        if(toggleMenu){
+          showcaseMenu=!showcaseMenu;
+          re4ipc_pause(showcaseMenu?1:0,500);
+        }
+        if(showcaseMenu && confirmExit)userQuit=true;
+        if(showcaseMenu && cancelExit){showcaseMenu=false;re4ipc_pause(0,500);}
+        if(showcaseMenu && cycleAspect){displayMode=(displayMode+1)%3;showcaseAspect(renderer,displayMode);}
+#else
         while(SDL_PollEvent(&ev)){
           if(ev.type==SDL_QUIT || (ev.type==SDL_KEYDOWN && ev.key.keysym.sym==SDLK_ESCAPE)){
              puts("USER_EXIT_EVENT=QUIT_OR_ESCAPE");userQuit=true;break;
           }
         }
+#endif
         if(result||userQuit)break;
+#ifndef RE4_R36S_SHOWCASE
         if(joy){
           SDL_GameControllerUpdate();
           const bool held=SDL_GameControllerGetButton(joy,SDL_CONTROLLER_BUTTON_BACK) &&
@@ -346,18 +550,29 @@ int main(int argc,char**argv) {
             }
           }else quitHeldAt=Clock::time_point{};
         }
-        r36s_crash::mark("core_state",processed,last);
+#endif
+        TRACE_MARK("core_state",processed,last);
         int state=re4ipc_state();
         if(state==RE4_CORE_FAILED || state==RE4_CORE_ENDED){
           printf("CORE_STATE=%d MSG=%s\n",state,re4ipc_message());result=14;break;
         }
-        r36s_crash::mark("input_controller",processed,last);
+        TRACE_MARK("input_controller",processed,last);
+#ifdef RE4_R36S_SHOWCASE
+        updatePad(joy,showcaseMenu);
+        if(!showcaseMenu)re4ipc_vsync(nowNs());
+#else
         updatePad(joy);
-        r36s_crash::mark("ipc_vsync",processed,last);
+        TRACE_MARK("ipc_vsync",processed,last);
         re4ipc_vsync(nowNs());
+#endif
         // Receive the SAME decoded GX stream that the Android core mode receives.
-        r36s_crash::mark("ipc_gx_acquire",processed,last);
-        if(const Re4GxChunk* c=re4ipc_gx_acquire()){
+        TRACE_MARK("ipc_gx_acquire",processed,last);
+#ifdef RE4_R36S_SHOWCASE
+        const Re4GxChunk* acquired=showcaseMenu?nullptr:re4ipc_gx_acquire();
+#else
+        const Re4GxChunk* acquired=re4ipc_gx_acquire();
+#endif
+        if(const Re4GxChunk* c=acquired){
           if(c->version!=RE4_GX_FRAME_VERSION || c->opWords>(1u<<22) ||
              c->vertexBytes>(32u<<20) || c->blobBytes>(32u<<20)){
             fprintf(stderr,"CORE_GX_INVALID_PACKET=%u,%u,%u\n",c->version,c->opWords,c->blobBytes);
@@ -373,40 +588,43 @@ int main(int argc,char**argv) {
             printf("TRACE_GX_FRAME_BEGIN=%u GX_SEQUENCE=%u OPS=%u VERTEX_BYTES=%u INDEX_COUNT=%u BLOB_BYTES=%u DRAWS=%u TEXTURE_BYTES=%u FLAGS=0x%x\n",
               processed+1,last,c->opWords,c->vertexBytes,c->indexCount,c->blobBytes,c->draws,c->textureBytes,c->flags);
           }
-          r36s_crash::mark("renderer_Run_GX",processed+1,last);
+          TRACE_MARK("renderer_Run_GX",processed+1,last);
           renderer.Run(*c);
-          r36s_crash::mark("renderer_Run_return",processed+1,last);
+          TRACE_MARK("renderer_Run_return",processed+1,last);
           if(processed<40 || processed%10==0)puts("TRACE_RENDER_RUN_OK=1");
           glBindFramebuffer(GL_FRAMEBUFFER,0);
           glViewport(0,0,kW,kH);
           glClearColor(0,0,0,1);
           glClear(GL_COLOR_BUFFER_BIT);
-          r36s_crash::mark("renderer_Present",processed+1,last);
+          TRACE_MARK("renderer_Present",processed+1,last);
           if(renderer.Present(0,0,kW,kH))presented++;
-          r36s_crash::mark("renderer_Present_return",processed+1,last);
+#ifdef RE4_R36S_SHOWCASE
+          if(showcaseMenu)showcaseExitOverlay(displayMode);
+#endif
+          TRACE_MARK("renderer_Present_return",processed+1,last);
           GLenum e=glGetError();
           if(e!=GL_NO_ERROR) {
             if(glErrors<12)printf("CORE_GX_GL_ERROR_FRAME_%u=0x%x\n",processed,e);
             glErrors++;
           }
           if(swapMode==1 || swapMode==4 || swapMode==5){
-            r36s_crash::mark("pre_swap_glFinish",processed+1,last);
+            TRACE_MARK("pre_swap_glFinish",processed+1,last);
             if(processed<30)printf("TRACE_GL_FINISH_BEGIN=%u\n",processed+1);
             glFinish();
             if(processed<30)printf("TRACE_GL_FINISH_OK=%u GL_ERROR=0x%x\n",
                                    processed+1,glGetError());
           }
           if(swapMode!=4){
-            r36s_crash::mark("egl_swap",processed+1,last);
+            TRACE_MARK("egl_swap",processed+1,last);
             if(processed<30)printf("TRACE_EGL_SWAP_BEGIN=%u\n",processed+1);
             SDL_GL_SwapWindow(window);
             if(processed<30)printf("TRACE_EGL_SWAP_OK=%u\n",processed+1);
           }else{
             if(processed==0)puts("WARNING_OFFSCREEN_TEST_NO_SCREEN_UPDATE=YES");
           }
-          r36s_crash::mark("ipc_gx_release",processed+1,last);
+          TRACE_MARK("ipc_gx_release",processed+1,last);
           re4ipc_gx_release(c);
-          r36s_crash::mark("frame_complete",processed+1,last);
+          TRACE_MARK("frame_complete",processed+1,last);
           if(processed<40 || processed%10==0)puts("TRACE_FRAME_COMPLETE=1");
           processed++;
           if(processed==1 || processed%10==0){
@@ -415,11 +633,24 @@ int main(int argc,char**argv) {
               processed,last,s.draws,s.programs,s.shaderErrors);
           }
         }
-        // Drain generated test audio to keep the core's IPC ring moving.
+#ifdef RE4_R36S_SHOWCASE
+        else if(showcaseMenu){
+          glBindFramebuffer(GL_FRAMEBUFFER,0);
+          glViewport(0,0,kW,kH);
+          glClearColor(0,0,0,1);
+          glClear(GL_COLOR_BUFFER_BIT);
+          renderer.Present(0,0,kW,kH);
+          showcaseExitOverlay(displayMode);
+          glFinish(); // proven Mali mode 5 remains intact in exit menu
+          SDL_GL_SwapWindow(window);
+        }
+#else
+        // Diagnostic launcher used to discard sound; demo has a dedicated SDL audio feed.
         int16_t audio[512*2]{};
-        r36s_crash::mark("ipc_audio_drain",processed,last);
+        TRACE_MARK("ipc_audio_drain",processed,last);
         re4ipc_audio(audio,512);
-        r36s_crash::mark("ipc_audio_return",processed,last);
+        TRACE_MARK("ipc_audio_return",processed,last);
+#endif
         nextTick+=std::chrono::milliseconds(16);
         const auto current=Clock::now();
         if(nextTick>current) SDL_Delay((Uint32)std::chrono::duration_cast<std::chrono::milliseconds>(nextTick-current).count());
@@ -465,7 +696,11 @@ int main(int argc,char**argv) {
         }
       }
       printf("SESSION_STOP_REASON=%s\n",userQuit?"user_exit":result?"error":"time_or_frame_limit");
-      r36s_crash::mark("report_stats",processed,last);
+#ifdef RE4_R36S_SHOWCASE
+      showcaseAudio.stopAndClose();
+      if(showcaseMenu)re4ipc_pause(0,500);
+#endif
+      TRACE_MARK("report_stats",processed,last);
       reportStats(renderer);
 #ifdef RE4_R36S_SHADER_CACHE
       printf("SHADER_CACHE_FINAL_PROGRAMS=%u\n",renderer.Stats().programs);
@@ -491,7 +726,7 @@ int main(int argc,char**argv) {
 #ifdef RE4_R36S_SCALABLE_EFB
       systemMemory("SESSION_END");
 #endif
-      r36s_crash::mark("renderer_release",processed,last);
+      TRACE_MARK("renderer_release",processed,last);
       renderer.Release();
     }
   }catch(const std::exception& e){
@@ -502,14 +737,14 @@ int main(int argc,char**argv) {
   // The probe exits when START is pressed, but shutdown also closes its socket.
   pad={};
   re4ipc_pad(&pad);
-  r36s_crash::mark("ipc_shutdown",0,0);
+  TRACE_MARK("ipc_shutdown",0,0);
   re4ipc::shutdown(5000);
   if(joy)SDL_GameControllerClose(joy);
-  r36s_crash::mark("egl_cleanup",0,0);
+  TRACE_MARK("egl_cleanup",0,0);
   SDL_GL_DeleteContext(context);
   SDL_DestroyWindow(window);
   SDL_Quit();
   printf("EXIT_CODE=%d\n",result);
-  r36s_crash::mark("exit",0,0);
+  TRACE_MARK("exit",0,0);
   return result;
 }
