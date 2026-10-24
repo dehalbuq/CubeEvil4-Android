@@ -662,6 +662,7 @@ int main(int argc,char**argv) {
         if(nextTick>current) SDL_Delay((Uint32)std::chrono::duration_cast<std::chrono::milliseconds>(nextTick-current).count());
         else nextTick=current;
         if(++polls%150==0)printf("GAME_BOOT_HEARTBEAT=%u CORE_STATE=%d CHUNKS=%u PRESENTED=%u\n",polls,re4ipc_state(),processed,presented);
+#ifndef RE4_R36S_SHOWCASE
         if(Clock::now()>=telemetryAt){
           const auto timeNow=Clock::now();
           const double seconds=std::chrono::duration<double>(timeNow-telemetryStart).count();
@@ -700,6 +701,7 @@ int main(int argc,char**argv) {
           telemetryStart=timeNow;
           telemetryAt=timeNow+std::chrono::seconds(5);
         }
+#endif
       }
       printf("SESSION_STOP_REASON=%s\n",userQuit?"user_exit":result?"error":"time_or_frame_limit");
 #ifdef RE4_R36S_SHOWCASE
