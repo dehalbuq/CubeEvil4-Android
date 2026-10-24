@@ -1,0 +1,63 @@
+name: R36S - fullscreen demo robust joystick exit
+on:
+  push:
+    branches:
+      - chatgpt/r36s-demo-reliable-exit-controls
+    paths:
+      - "port/r36s/gx-host/**"
+      - "port/android-decomp/app/src/main/cpp/gx_gl.cpp"
+      - "port/android-decomp/app/src/main/cpp/gx_gl.h"
+      - ".github/workflows/r36s-demo-exit-hotfix.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  native-r36s-exit-hotfix:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Cortex-A35 compiler and SDL2 joystick support
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y cmake ninja-build g++ binutils pkg-config libsdl2-dev libgles-dev
+      - name: Validate joystick fallback, timed exits, and clean original game data
+        run: |
+          set -eux
+          g++ -std=c++17 -O2 -Wall -Wextra \
+            $(pkg-config --cflags sdl2) \
+            -I port/r36s/gx-host \
+            port/r36s/gx-host/test_showcase_exit_controls.cpp \
+            -o /tmp/test_showcase_exit_controls \
+            $(pkg-config --libs sdl2)
+          SDL_VIDEODRIVER=dummy /tmp/test_showcase_exit_controls
+          g++ -std=c++17 -O2 -Wall -Wextra -I port/r36s/gx-host \
+            port/r36s/gx-host/test_showcase_clean_data.cpp \
+            -o /tmp/test_showcase_clean_data
+          /tmp/test_showcase_clean_data
+      - name: Build separate AArch64 demo with emergency exit and full image
+        run: |
+          set -eux
+          cmake -S port/r36s/gx-host -B port/build/r36s-gx-host -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build port/build/r36s-gx-host --target r36s_game_showcase_exitfix --parallel 2
+          file port/build/r36s-gx-host/r36s_game_showcase_exitfix
+          readelf -h port/build/r36s-gx-host/r36s_game_showcase_exitfix | grep -E 'Class:|Machine:'
+          test -s port/build/r36s-gx-host/r36s_game_showcase_exitfix
+      - name: Package additive R36S demo hotfix and corrected existing launcher
+        run: |
+          set -euo pipefail
+          sh -n port/r36s/gx-host/RE4-R36S-Demonstracao-Tela-Cheia.sh
+          mkdir -p dist/cubeevil4_live_gx
+          cp port/build/r36s-gx-host/r36s_game_showcase_exitfix dist/cubeevil4_live_gx/
+          strip --strip-unneeded dist/cubeevil4_live_gx/r36s_game_showcase_exitfix
+          cp port/r36s/gx-host/RE4-R36S-Demonstracao-Tela-Cheia.sh dist/
+          cp port/r36s/gx-host/README-R36S-EXIT-FIX.md dist/LEIA-ME-SAIDA-CORRIGIDA.md
+          chmod +x dist/cubeevil4_live_gx/r36s_game_showcase_exitfix dist/RE4-R36S-Demonstracao-Tela-Cheia.sh
+          test "$(find dist -type f | wc -l)" -eq 3
+          ! find dist -type f | grep -Ei 'iso$|gcm$|\.drs$|\.das$|\.rel$|re4_coreproc|libre4_|memcard|card-a.bin'
+      - name: Publish optional fullscreen gamepad exit hotfix (no game data)
+        uses: actions/upload-artifact@v4
+        with:
+          name: CubeEvil4-R36S-Demo-Saida-Corrigida-ARM64
+          path: dist/
+          retention-days: 14
