@@ -420,6 +420,11 @@ int main(int argc,char**argv) {
   const int corePid=re4ipc::pid();
   printf("CORE_PID=%d\n",corePid);
   TRACE_MARK("sdl_init",0,0);
+#ifdef RE4_R36S_SHOWCASE
+  // Keep the R36S physical joystick visible even if KMSDRM window focus is
+  // unexpectedly lost, and receive both SDL_JOYBUTTONDOWN and controller events.
+  SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS,"1");
+#endif
   if(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_EVENTS|SDL_INIT_GAMECONTROLLER)!=0) {
     fprintf(stderr,"SDL_ERROR=%s\n",SDL_GetError());
     re4ipc::shutdown(3000);return 5;
@@ -454,6 +459,8 @@ int main(int argc,char**argv) {
   // firmware mappings where SELECT/BACK doesn't generate controller events.
   r36s_showcase_exit::Device exitDevice;
   exitDevice.attach(joy);
+  SDL_JoystickEventState(SDL_ENABLE);
+  SDL_GameControllerEventState(SDL_ENABLE);
   const bool diagnoseInput=std::getenv("RE4_SHOWCASE_INPUT_DIAG") &&
                            std::strcmp(std::getenv("RE4_SHOWCASE_INPUT_DIAG"),"1")==0;
   if(diagnoseInput) {
