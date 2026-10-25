@@ -1,0 +1,121 @@
+name: R36S - eliminate accidental exit menu, demo and complete restore
+
+on:
+  push:
+    branches:
+      - chatgpt/r36s-demo-no-phantom-exit-menu
+    paths:
+      - "port/r36s/gx-host/**"
+      - ".github/workflows/r36s-demo-no-phantom-menu.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build-and-package:
+    name: Test exit gestures, build ARM64 and assemble both reinstall options
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install native arm64 compilers and Mali-compatible GLES headers
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y cmake ninja-build g++ binutils pkg-config libsdl2-dev libgles-dev
+
+      - name: Test no phantom exit after 70 A/B presses, START/SELECT holds, and files
+        run: |
+          set -eux
+          g++ -std=c++17 -O2 -Wall -Wextra $(pkg-config --cflags sdl2) \
+            -I port/r36s/gx-host \
+            port/r36s/gx-host/test_showcase_exit_controls.cpp \
+            -o /tmp/test_showcase_exit_controls $(pkg-config --libs sdl2)
+          SDL_VIDEODRIVER=dummy /tmp/test_showcase_exit_controls
+          g++ -std=c++17 -O2 -Wall -Wextra -I port/r36s/gx-host \
+            port/r36s/gx-host/test_showcase_clean_data.cpp \
+            -o /tmp/test_showcase_clean_data
+          /tmp/test_showcase_clean_data
+
+      - name: Build independent Cortex-A35 fullscreen frontend, keeping stable binary
+        run: |
+          set -eux
+          cmake -S port/r36s/gx-host -B port/build/r36s-gx-host -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build port/build/r36s-gx-host --target r36s_game_showcase_menuquiet --parallel 2
+          readelf -h port/build/r36s-gx-host/r36s_game_showcase_menuquiet | grep -E 'Class:|Machine:'
+          file port/build/r36s-gx-host/r36s_game_showcase_menuquiet
+
+      - name: Produce standalone hotfix overlay for existing install
+        run: |
+          set -euo pipefail
+          mkdir -p distpatch/cubeevil4_live_gx
+          cp port/build/r36s-gx-host/r36s_game_showcase_menuquiet distpatch/cubeevil4_live_gx/
+          strip --strip-unneeded distpatch/cubeevil4_live_gx/r36s_game_showcase_menuquiet
+          cp port/r36s/gx-host/RE4-R36S-Demonstracao-Tela-Cheia.sh distpatch/
+          cp port/r36s/gx-host/README-R36S-NO-PHANTOM-MENU.md distpatch/LEIA-ME-CORRECAO-MENU.md
+          sh -n distpatch/RE4-R36S-Demonstracao-Tela-Cheia.sh
+          chmod +x distpatch/RE4-R36S-Demonstracao-Tela-Cheia.sh distpatch/cubeevil4_live_gx/r36s_game_showcase_menuquiet
+          test "$(find distpatch -type f | wc -l)" -eq 3
+          ! find distpatch -type f | grep -Ei '\.(iso|gcm|das|drs|gci|sav)$|/data/|/memcard/'
+
+      - name: Publish update for already working game installations
+        uses: actions/upload-artifact@v4
+        with:
+          name: CubeEvil4-R36S-Demo-Sem-Menu-Fantasma-ARM64
+          path: distpatch/
+          retention-days: 14
+
+      - name: Retrieve previously compiled complete AArch64 game core and >=114 modules
+        uses: actions/download-artifact@v4
+        with:
+          name: CubeEvil4-R36S-Live-Core-GX
+          run-id: 40114274602
+          github-token: ${{ github.token }}
+          path: restore/core
+
+      - name: Retrieve previously stable GL renderer and fallback launchers
+        uses: actions/download-artifact@v4
+        with:
+          name: CubeEvil4-R36S-GLES-Estavel-ARM64
+          run-id: 39994893655
+          github-token: ${{ github.token }}
+          path: restore/stable
+
+      - name: Assemble complete port restoration with the corrected demo
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p distfull/cubeevil4_live_gx/modules
+          cp -a restore/core/. distfull/
+          cp -a restore/stable/. distfull/
+          cp -a distpatch/. distfull/
+          cp port/r36s/gx-host/RE4-R36S-Verificar-Arquivos.sh distfull/
+          cp port/r36s/gx-host/README-R36S-RESTORE.md distfull/LEIA-ME-RESTAURO-PORT.md
+          chmod +x distfull/RE4-R36S-Verificar-Arquivos.sh
+          for f in re4_coreproc libre4_main.so libre4_host.so libre4_platform.so r36s_game_boot r36s_game_showcase_menuquiet; do
+            test -s "distfull/cubeevil4_live_gx/$f"
+          done
+          modules="$(find distfull/cubeevil4_live_gx/modules -maxdepth 1 -name 'libre4_*.so' -type f | wc -l)"
+          echo "ARM64_GAME_MODULES=$modules"
+          test "$modules" -ge 114
+          test ! -e distfull/cubeevil4_live_gx/data
+          test ! -e distfull/cubeevil4_live_gx/cache
+          ! find distfull -type f | grep -Ei '\.(iso|gcm|das|drs|rel|gci|sav)$|/data/|/memcard/|card-a\.bin$'
+          sh -n distfull/RE4-R36S-Estavel.sh
+          sh -n distfull/RE4-R36S-Demonstracao-Tela-Cheia.sh
+          sh -n distfull/RE4-R36S-Verificar-Arquivos.sh
+          for f in re4_coreproc r36s_game_boot r36s_game_showcase_menuquiet; do
+            file "distfull/cubeevil4_live_gx/$f"
+            readelf -h "distfull/cubeevil4_live_gx/$f" | grep 'AArch64'
+          done
+          echo "==== RESTORE PACKAGE CONTENTS ===="
+          find distfull -maxdepth 2 -type f | sort | head -50
+          du -sh distfull
+
+      - name: Publish single full rebuild-overlay excluding user game data and saves
+        uses: actions/upload-artifact@v4
+        with:
+          name: CubeEvil4-R36S-RESTAURO-COMPLETO-SEM-MENU-FANTASMA
+          path: distfull/
+          retention-days: 14

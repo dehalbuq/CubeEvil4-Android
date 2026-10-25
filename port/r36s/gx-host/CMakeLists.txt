@@ -151,3 +151,10 @@ re4_a35_target(r36s_game_showcase_exitfix TRUE)
 target_compile_definitions(r36s_game_showcase_exitfix PRIVATE
   RE4_R36S_SCALABLE_EFB=1 RE4_R36S_SHOWCASE=1 NDEBUG=1
 )
+
+# R36S showcase v4: no guessed HOME=raw button 0; intentional long-hold only
+# exits. New executable so the old demo is recoverable if firmware differs.
+re4_a35_target(r36s_game_showcase_menuquiet TRUE)
+target_compile_definitions(r36s_game_showcase_menuquiet PRIVATE
+  RE4_R36S_SCALABLE_EFB=1 RE4_R36S_SHOWCASE=1 NDEBUG=1
+)

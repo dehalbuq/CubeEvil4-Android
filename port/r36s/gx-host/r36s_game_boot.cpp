@@ -527,36 +527,22 @@ int main(int argc,char**argv) {
           if(ev.type==SDL_KEYDOWN && ev.key.repeat==0){
             if(ev.key.keysym.sym==SDLK_ESCAPE||ev.key.keysym.sym==SDLK_F1)
               toggleMenu=true;
-            else if(showcaseMenu && (ev.key.keysym.sym==SDLK_RETURN||ev.key.keysym.sym==SDLK_z))
+            else if(showcaseMenu &&
+                    (ev.key.keysym.sym==SDLK_RETURN||ev.key.keysym.sym==SDLK_z))
               confirmExit=true;
-            else if(showcaseMenu && (ev.key.keysym.sym==SDLK_BACKSPACE||ev.key.keysym.sym==SDLK_x))
+            else if(showcaseMenu &&
+                    (ev.key.keysym.sym==SDLK_BACKSPACE||ev.key.keysym.sym==SDLK_x))
               cancelExit=true;
           }
-          if(ev.type==SDL_CONTROLLERBUTTONDOWN){
-            if(ev.cbutton.button==SDL_CONTROLLER_BUTTON_BACK||
-               ev.cbutton.button==SDL_CONTROLLER_BUTTON_GUIDE)
-              toggleMenu=true;
-            else if(showcaseMenu && ev.cbutton.button==SDL_CONTROLLER_BUTTON_A)
-              confirmExit=true;
-            else if(showcaseMenu && ev.cbutton.button==SDL_CONTROLLER_BUTTON_B)
-              cancelExit=true;
-          }
-          if(ev.type==SDL_JOYBUTTONDOWN){
-            if(diagnoseInput)
-              fprintf(stderr,"R36S_RAW_JOYBUTTON_DOWN DEVICE=%d BUTTON=%u\n",
-                      static_cast<int>(ev.jbutton.which),
-                      static_cast<unsigned>(ev.jbutton.button));
-            if(exitDevice.matchesRaw(ev.jbutton.which,ev.jbutton.button,0)||
-               exitDevice.matchesRaw(ev.jbutton.which,ev.jbutton.button,4))
-              toggleMenu=true;
-            else if(showcaseMenu && exitDevice.matchesRaw(ev.jbutton.which,ev.jbutton.button,2))
-              confirmExit=true;
-            else if(showcaseMenu && exitDevice.matchesRaw(ev.jbutton.which,ev.jbutton.button,3))
-              cancelExit=true;
-          }
+          // SDL_CONTROLLERBUTTONDOWN and SDL_JOYBUTTONDOWN are frequently
+          // reported for the SAME R36S button, and the old raw HOME=0 guess
+          // made ordinary A presses open the overlay. Never use individual
+          // button-down events to open/close the menu. Poll long holds only.
+          if(diagnoseInput && ev.type==SDL_JOYBUTTONDOWN)
+            fprintf(stderr,"R36S_RAW_JOYBUTTON_DOWN DEVICE=%d BUTTON=%u\\n",
+                    static_cast<int>(ev.jbutton.which),
+                    static_cast<unsigned>(ev.jbutton.button));
         }
-        // Pumped joystick states are checked on every loop, including when
-        // the firmware does not generate SDL_CONTROLLERBUTTONDOWN events.
         SDL_GameControllerUpdate();
         SDL_JoystickUpdate();
         const auto actions=exitGestures.update(
@@ -565,17 +551,15 @@ int main(int argc,char**argv) {
         confirmExit |= actions.confirmExit;
         cancelExit |= actions.cancelMenu;
         directExit |= actions.emergencyExit;
-        // Unconditional emergency exit works even when the overlay is
-        // invisible or A/B is unmapped: hold START alone for 6 seconds,
-        // or START+SELECT for 1.5 seconds.
-        if(directExit){
-          if(diagnoseInput)fprintf(stderr,"R36S_USER_EXIT=EMERGENCY_GESTURE\n");
+        if(directExit) {
+          if(diagnoseInput)
+            fprintf(stderr,"R36S_USER_EXIT=DELIBERATE_LONG_HOLD\\n");
           userQuit=true;
           break;
         }
         if(diagnoseInput && toggleMenu)
-          fprintf(stderr,"R36S_EXIT_MENU_TOGGLED=1 MENU_WAS_OPEN=%d\n",showcaseMenu?1:0);
-        // Never auto-confirm with the button press that opens the menu.
+          fprintf(stderr,"R36S_EXIT_MENU_TOGGLED=LONG_HOLD MENU_WAS_OPEN=%d\\n",
+                  showcaseMenu?1:0);
         if(toggleMenu) {
           showcaseMenu=!showcaseMenu;
           re4ipc_pause(showcaseMenu?1:0,500);
