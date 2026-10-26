@@ -19,6 +19,9 @@
 #include "../include/re4_gx_fifo.h"
 #include "gx_internal.h"
 #include "re4_runtime.h"
+#ifdef RE4_R36S_FAST_FIFO
+#include "gx_fifo_fast_copy.h"
+#endif
 
 #include <stdint.h>
 #include <stdio.h>
@@ -91,35 +94,15 @@ void toMemory(const u8* bytes, int n)
     }
     u32 end = (gPi[4] & 0x03FFFFFF) + 4;  // DisplayListFifo.top = list + size - 4
 #ifdef RE4_R36S_FAST_FIFO
-    // Original game GX library emits many very small writes (1/2/4 bytes)
-    // when recording CPU display lists. The old per-byte loop resolves a
-    // physical host address for *every byte*; memorySpan resolves the address
-    // once for each *contiguous* valid range, and memcpy performs that range.
-    //
-    // The range ends at the same PI top (+4) or MEM1/alias boundary as the
-    // original code. If a range crosses into an unbacked alias, the next
-    // iteration flags overflow at exactly the first invalid byte.
-    // gWrite/gPi[5] retain the GameCube's original 32-byte word semantics.
-    int left = n;
-    const u8* src = bytes;
-    while (left > 0) {
-        if (gWrite >= end) {
-            gOverflow = true;
-            break;
-        }
-        u32 span = 0;
-        u8* at = re4gx::memorySpan(gWrite, &span);
-        if (!at || !span) {
-            gOverflow = true;
-            break;
-        }
-        u32 count = (u32) left;
-        if (count > span) count = span;
-        if (count > end - gWrite) count = end - gWrite;
-        memcpy(at, src, count);
-        src += count;
-        left -= (int) count;
-        gWrite += count;
+    // Thousands of small GX display-list writes are mapped and copied by
+    // backed contiguous ranges, not by resolving an address per byte.
+    // The helper's exact byte/overflow behavior is checked against the old
+    // loop by 75k deterministic randomized reference cases in CI.
+    if (!re4gx_fastfifo::copy(gWrite, end, bytes, n,
+            [](u32 pos, u32* span) -> u8* {
+                return re4gx::memorySpan(pos, span);
+            })) {
+        gOverflow = true;
     }
 #else
     for (int i = 0; i < n; i++) {
