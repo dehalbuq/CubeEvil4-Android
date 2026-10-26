@@ -51,6 +51,8 @@ for t in "${targets[@]}"; do
     mkdir -p "$root/port/build"
     cmake -S "$root/port/whole" -B "$build" -G Ninja \
         -DCMAKE_TOOLCHAIN_FILE="$root/port/whole/cmake/linux-$t.cmake" -DRE4_OPT_LEVEL="${RE4_OPT:-}" \
+        -DRE4_R36S_A35_CORE="${RE4_R36S_A35_CORE:-OFF}" \
+        -DRE4_R36S_FAST_FIFO="${RE4_R36S_FAST_FIFO:-OFF}" \
         -DCMAKE_EXPORT_COMPILE_COMMANDS=ON > "$log" 2>&1 &&
         ninja -C "$build" -k 0 ${RE4_JOBS:+-j "$RE4_JOBS"} >> "$log" 2>&1
     code=$?
