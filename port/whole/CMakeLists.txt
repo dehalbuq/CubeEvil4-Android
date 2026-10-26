@@ -402,6 +402,13 @@ endforeach()
 if(CMAKE_CXX_COMPILER_TARGET)
     set(RE4_TARGET_FLAG "--target=${CMAKE_CXX_COMPILER_TARGET}")
 endif()
+# The link planner must use the SAME C++ standard library as actual builds.
+# Without -stdlib=libc++ its trial link uses GNU libstdc++, invents 12
+# bogus libc++ stubs and can override real runtime functions at load time.
+# This applies only to the independent native-AArch64 libc++ experiment.
+if(CMAKE_CXX_FLAGS MATCHES "stdlib=libc")
+    list(APPEND RE4_TARGET_FLAG -stdlib=libc++ -lc++abi)
+endif()
 if(ANDROID)
     # the trial link must see the Android logging and loader libraries, or
     # their functions would be planned as stubs
