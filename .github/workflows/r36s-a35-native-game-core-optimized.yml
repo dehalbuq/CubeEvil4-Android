@@ -1,0 +1,187 @@
+name: R36S - native original game engine A35 O3 GX fast FIFO
+
+on:
+  push:
+    branches:
+      - chatgpt/r36s-a35-core-o3-gx-fastfifo
+    paths:
+      - "port/whole/**"
+      - "port/tools/whole_build.sh"
+      - "port/r36s/gx-host/**"
+      - ".github/workflows/r36s-a35-native-game-core-optimized.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fifo-unit-tests:
+    name: Verify original GX FIFO byte and overflow semantics
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile and compare actual GX fast-copy against old byte loop
+        run: |
+          set -eux
+          g++ -std=c++17 -O3 -Wall -Wextra -Werror \
+            -I port/whole/runtime \
+            port/whole/tests/test_r36s_gx_fifo_fast_copy.cpp \
+            -o /tmp/re4_gx_fifo_fast_compare
+          /tmp/re4_gx_fifo_fast_compare
+          bash -n port/tools/whole_build.sh
+          for f in RE4-R36S-Nucleo-A35-O3.sh RE4-R36S-Comparar-Nucleo.sh RE4-R36S-Teste-Nucleo-O2.sh RE4-R36S-Teste-Nucleo-O3.sh; do
+            sh -n "port/r36s/gx-host/$f"
+          done
+
+  core-a35:
+    name: Recompile entire original game, 114 modules, full QEMU tests (-O3 A35)
+    needs: fifo-unit-tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      RE4_JOBS: "2"
+      RE4_OPT: "3"
+      RE4_R36S_A35_CORE: "ON"
+      RE4_R36S_FAST_FIFO: "ON"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install official Linux ARM64 cross-compiler and QEMU test tools
+        run: |
+          sudo bash port/tools/whole_setup_linux.sh
+      - name: Build and run upstream self/module/runtime/core/IPC/saves/media tests
+        shell: bash
+        run: |
+          set -o pipefail
+          bash port/tools/whole_build.sh aarch64 2>&1 | tee r36s-a35-o3-core-ci.log
+      - name: Verify all optimized A35 core binaries and 114+ linked modules
+        run: |
+          set -euo pipefail
+          OUT=port/build/whole-aarch64-O3
+          for f in re4_coreproc libre4_main.so libre4_host.so libre4_platform.so; do
+            test -s "$OUT/$f"
+            file "$OUT/$f"
+            readelf -h "$OUT/$f" | grep -E 'Machine:.*AArch64'
+          done
+          test "$(find "$OUT/modules" -maxdepth 1 -name 'libre4_*.so' -type f | wc -l)" -ge 114
+          grep -q "R36S CORE: optimizing all reconstructed game units and modules for Cortex-A35" "$OUT.log"
+          grep -q "R36S CORE: GX CPU display-list writes use contiguous memcpy fast path" "$OUT.log"
+          echo "CORE_OPTIMIZATION_FLAGS_CONFIRMED=YES"
+      - name: Stage optimized core and modules (no discs, textures or saves)
+        run: |
+          set -euo pipefail
+          OUT=port/build/whole-aarch64-O3
+          mkdir -p packaged/modules
+          for f in re4_coreproc libre4_main.so libre4_host.so libre4_platform.so; do
+            cp "$OUT/$f" packaged/
+          done
+          cp "$OUT"/modules/libre4_*.so packaged/modules/
+          test "$(find packaged/modules -maxdepth 1 -name 'libre4_*.so' -type f | wc -l)" -ge 114
+      - uses: actions/upload-artifact@v4
+        with:
+          name: re4-r36s-a35-o3-core-validated
+          path: packaged/
+          retention-days: 14
+      - name: Preserve CI logfile if O3 QEMU tests fail
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: re4-r36s-a35-o3-build-failure-logs
+          path: |
+            r36s-a35-o3-core-ci.log
+            port/build/whole-aarch64-O3.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  frontend:
+    name: Build matched R36S A35 frontend and fullscreen gameplay demo
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install native arm64 GLES3/SDL2 and compiler
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y cmake ninja-build g++ binutils pkg-config libsdl2-dev libgles-dev
+      - name: Compile matching A35 75pct diagnostic and release demo binaries
+        run: |
+          set -eux
+          cmake -S port/r36s/gx-host -B port/build/r36s-gx-host -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build port/build/r36s-gx-host --target r36s_game_a35_scalable r36s_game_showcase_menuquiet --parallel 2
+          for f in r36s_game_a35_scalable r36s_game_showcase_menuquiet;do
+            test -s "port/build/r36s-gx-host/$f"
+            readelf -h "port/build/r36s-gx-host/$f" | grep -E 'Machine:.*AArch64'
+          done
+      - name: Stage separately named frontends to leave installed demos intact
+        run: |
+          set -eux
+          mkdir -p packaged
+          cp port/build/r36s-gx-host/r36s_game_a35_scalable packaged/r36s_game_a35_core_compare
+          cp port/build/r36s-gx-host/r36s_game_showcase_menuquiet packaged/r36s_game_showcase_a35_o3
+          chmod +x packaged/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: re4-r36s-a35-75-frontend-compare
+          path: packaged/
+          retention-days: 14
+
+  combined:
+    name: Publish isolated runnable core + matched 480x396 frontends and A/B launchers
+    needs: [core-a35, frontend]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Get optimized and QEMU-validated original game engine
+        uses: actions/download-artifact@v4
+        with:
+          name: re4-r36s-a35-o3-core-validated
+          path: stage/optimized_core
+      - name: Get matched fullscreen and benchmark frontends
+        uses: actions/download-artifact@v4
+        with:
+          name: re4-r36s-a35-75-frontend-compare
+          path: stage/frontend
+      - name: Assemble additive R36S PortMaster folder (NO stable overwrite)
+        run: |
+          set -euo pipefail
+          mkdir -p dist/cubeevil4_live_gx/core_a35_o3/modules
+          cp stage/optimized_core/re4_coreproc stage/optimized_core/libre4_main.so \
+            stage/optimized_core/libre4_host.so stage/optimized_core/libre4_platform.so \
+            dist/cubeevil4_live_gx/core_a35_o3/
+          cp stage/optimized_core/modules/libre4_*.so dist/cubeevil4_live_gx/core_a35_o3/modules/
+          cp stage/frontend/r36s_game_a35_core_compare dist/cubeevil4_live_gx/
+          cp stage/frontend/r36s_game_showcase_a35_o3 dist/cubeevil4_live_gx/
+          for launcher in RE4-R36S-Nucleo-A35-O3.sh RE4-R36S-Comparar-Nucleo.sh RE4-R36S-Teste-Nucleo-O2.sh RE4-R36S-Teste-Nucleo-O3.sh; do
+            sh -n "port/r36s/gx-host/$launcher"
+            cp "port/r36s/gx-host/$launcher" dist/
+            chmod +x "dist/$launcher"
+          done
+          cp port/r36s/gx-host/README-R36S-CORE-A35-O3.md dist/LEIA-ME-A35-CORE-OPT.md
+          chmod +x dist/cubeevil4_live_gx/core_a35_o3/re4_coreproc
+          chmod +x dist/cubeevil4_live_gx/r36s_game_a35_core_compare dist/cubeevil4_live_gx/r36s_game_showcase_a35_o3
+          for f in re4_coreproc libre4_main.so libre4_host.so libre4_platform.so;do
+            test -s "dist/cubeevil4_live_gx/core_a35_o3/$f"
+          done
+          modules=$(find dist/cubeevil4_live_gx/core_a35_o3/modules -name 'libre4_*.so' -type f | wc -l)
+          echo "RE4_R36S_A35_MODULES=$modules"
+          test "$modules" -ge 114
+          test "$(find dist -type f | wc -l)" -ge 123
+          test ! -e dist/cubeevil4_live_gx/data
+          test ! -e dist/cubeevil4_live_gx/cache
+          test ! -e dist/cubeevil4_live_gx/re4_coreproc
+          test ! -e dist/cubeevil4_live_gx/libre4_main.so
+          test ! -e dist/cubeevil4_live_gx/r36s_game_boot
+          test ! -e dist/cubeevil4_live_gx/r36s_game_showcase_menuquiet
+          ! find dist -type f | grep -Ei '\.(iso|gcm|das|drs|rel|gci|sav)$|/data/|/memcard/|card-a\.bin$'
+          for f in re4_coreproc libre4_main.so libre4_platform.so;do
+            readelf -h "dist/cubeevil4_live_gx/core_a35_o3/$f" | grep -E 'Machine:.*AArch64'
+          done
+          echo "PACKAGE_VERSIONS=O3_A35_CORE_AND_O2_BASELINE_COMPARE"
+          du -sh dist
+      - name: Upload R36S original engine performance experiment
+        uses: actions/upload-artifact@v4
+        with:
+          name: CubeEvil4-R36S-CORE-A35-O3-FASTFIFO-ARM64
+          path: dist/
+          retention-days: 14
