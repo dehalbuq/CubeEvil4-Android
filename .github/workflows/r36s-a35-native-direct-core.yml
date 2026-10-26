@@ -21,7 +21,7 @@ jobs:
         run: |
           set -eux
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends clang lld cmake ninja-build binutils ffmpeg
+          sudo apt-get install -y --no-install-recommends clang lld cmake ninja-build binutils ffmpeg libc++-dev libc++abi-dev
           clang++ --version
           uname -m
       - name: Configure entire original RE4 engine and 114 modules, arm64 native
@@ -29,6 +29,7 @@ jobs:
           set -eux
           cmake -S port/whole -B port/build/whole-a35-native-O3 -G Ninja \
             -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_CXX_FLAGS=-stdlib=libc++ \
             -DCMAKE_BUILD_TYPE= \
             -DRE4_OPT_LEVEL=3 -DRE4_R36S_A35_CORE=ON -DRE4_R36S_FAST_FIFO=ON \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
