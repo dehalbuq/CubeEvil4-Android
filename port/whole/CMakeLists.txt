@@ -46,6 +46,24 @@ set(RE4_OPT_LEVEL "" CACHE STRING "optimisation level of the whole build (empty 
 if(RE4_OPT_LEVEL)
     add_compile_options(-O${RE4_OPT_LEVEL})
 endif()
+# Experimental *core* optimisation for the R36S (not just the GLES frontend).
+# Preserve exact GameCube float semantics: NO fast-math, no fp contractions,
+# no -Ofast, no unsafe culling, no changes to camera/HUD/collisions.
+# This option is off by default; the release core stays at -O2.
+option(RE4_R36S_A35_CORE "opt-in Cortex-A35 code generation for entire ARM64 game core" OFF)
+option(RE4_R36S_FAST_FIFO "opt-in contiguous GX display-list writes for ARM64 core" OFF)
+if(RE4_R36S_A35_CORE OR RE4_R36S_FAST_FIFO)
+    if(NOT RE4_ARCH STREQUAL "arm64")
+        message(FATAL_ERROR "R36S A35 core/FIFO experiments require Linux AArch64")
+    endif()
+endif()
+if(RE4_R36S_A35_CORE)
+    # Do not turn these on implicitly for the original decompiled source or
+    # cross-platform reference builds.
+    add_compile_options(-mcpu=cortex-a35 -mtune=cortex-a35)
+    message(STATUS "R36S CORE: optimizing all reconstructed game units and modules for Cortex-A35")
+endif()
+
 if(RE4_ARCH STREQUAL "i686")
     # Single-precision float arithmetic in SSE registers, as on ARM (VFP) and
     # the GameCube: x87 keeps excess precision between operations, so float
@@ -164,6 +182,11 @@ add_library(re4_platform_obj OBJECT
     "${RE4_ROOT}/port/src/stack_context.cpp")
 target_include_directories(re4_platform_obj PUBLIC runtime PRIVATE "${RE4_ROOT}/port/src")
 target_compile_features(re4_platform_obj PRIVATE cxx_std_17)
+if(RE4_R36S_FAST_FIFO)
+    target_compile_definitions(re4_platform_obj PRIVATE RE4_R36S_FAST_FIFO=1)
+    message(STATUS "R36S CORE: GX CPU display-list writes use contiguous memcpy fast path")
+endif()
+
 if(RE4_ARCH STREQUAL "arm64")
     # Stack switching: the Boost.Context assembly of the app's arm64 build
     set(RE4_FCONTEXT
