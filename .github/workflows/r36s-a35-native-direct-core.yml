@@ -88,6 +88,19 @@ jobs:
           done
           cp "$OUT"/modules/libre4_*.so coreout/modules/
           test "$(find coreout/modules -maxdepth 1 -name 'libre4_*.so' | wc -l)" -ge 114
+          # The native build uses LLVM libc++ rather than the distro's
+          # libstdc++; include the versioned AArch64 runtime dependencies
+          # beside the experimental core. Stable installed files stay intact.
+          mkdir -p coreout/runtime-libs
+          for lib in libc++.so.1 libc++abi.so.1 libunwind.so.1; do
+            path="$(ldconfig -p | awk -v lib="$lib" '$1 == lib { print $NF; exit }')"
+            if [ -n "$path" ] && [ -f "$path" ];then
+              cp -L "$path" "coreout/runtime-libs/$lib"
+              file "coreout/runtime-libs/$lib"
+            elif [ "$lib" != "libunwind.so.1" ];then
+              echo "REQUIRED_LIBCXX_RUNTIME_NOT_FOUND=$lib";exit 1
+            fi
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: re4-a35-O3-GX-fastfifo-native-validated-core
@@ -130,6 +143,10 @@ jobs:
           cp stage/core/re4_coreproc stage/core/libre4_main.so \
             stage/core/libre4_host.so stage/core/libre4_platform.so "$OUT/core_a35_o3/"
           cp stage/core/modules/libre4_*.so "$OUT/core_a35_o3/modules/"
+          if [ -d stage/core/runtime-libs ];then
+            cp stage/core/runtime-libs/*.so.1 "$OUT/core_a35_o3/"
+            echo "Bundled experimental LLVM libc++ AArch64 runtime. See https://llvm.org/LICENSE.txt" > dist/LLVM-CXX-RUNTIME-LICENSE.txt
+          fi
           cp stage/front/r36s_game_a35_core_compare stage/front/r36s_game_showcase_a35_o3 "$OUT/"
           for shname in RE4-R36S-Nucleo-A35-O3.sh RE4-R36S-Comparar-Nucleo.sh RE4-R36S-Teste-Nucleo-O2.sh RE4-R36S-Teste-Nucleo-O3.sh;do
             cp "port/r36s/gx-host/$shname" dist/
