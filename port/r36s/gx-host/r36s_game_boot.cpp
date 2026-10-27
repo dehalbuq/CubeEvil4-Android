@@ -25,6 +25,7 @@
 #include <array>
 #include <atomic>
 #include <thread>
+#include <csignal>
 #endif
 
 #ifdef RE4_R36S_SHOWCASE
@@ -39,6 +40,16 @@
 
 namespace {
 using Clock=std::chrono::steady_clock;
+#ifdef RE4_R36S_SHOWCASE
+// Safe remote escape from a foreground KMSDRM app whose handheld START/SELECT
+// are not delivered by SDL or evdev. Only set a flag inside the signal handler;
+// the ordinary loop performs core IPC shutdown, OpenGL/SDL teardown, and save
+// filesystem clean-up. SIGUSR1 also works through SSH without a keyboard.
+static volatile std::sig_atomic_t gShowcaseStopRequested=0;
+extern "C" void requestShowcaseStop(int) {
+  gShowcaseStopRequested=1;
+}
+#endif
 constexpr int kW=640,kH=480;
 
 int64_t nowNs() {
@@ -299,6 +310,11 @@ void showcaseExitOverlay(){
 int main(int argc,char**argv) {
   setvbuf(stdout,nullptr,_IONBF,0);
   setvbuf(stderr,nullptr,_IONBF,0);
+#ifdef RE4_R36S_SHOWCASE
+  std::signal(SIGUSR1,requestShowcaseStop);
+  std::signal(SIGTERM,requestShowcaseStop);
+  std::signal(SIGINT,requestShowcaseStop);
+#endif
   TRACE_MARK("installing_sigaction",0,0);
 #ifndef RE4_R36S_SHOWCASE
   if(!r36s_crash::install()){
@@ -464,6 +480,7 @@ int main(int argc,char**argv) {
   const bool diagnoseInput=std::getenv("RE4_SHOWCASE_INPUT_DIAG") &&
                            std::strcmp(std::getenv("RE4_SHOWCASE_INPUT_DIAG"),"1")==0;
   if(diagnoseInput) {
+    exitDevice.reportEvdev(stderr);
     fprintf(stderr,"R36S_INPUT_DEVICES=%d GAMECONTROLLER=%s\n",
             SDL_NumJoysticks(), joy?SDL_GameControllerName(joy):"(no SDL GC mapping)");
     for(int i=0;i<SDL_NumJoysticks();++i)
@@ -519,6 +536,9 @@ int main(int argc,char**argv) {
       bool userQuit=false;
       printf("SAFE_EXIT=ESC_OR_SDL_QUIT_OR_HOLD_SELECT_PLUS_START_2_SECONDS\n");
       while(Clock::now()<deadline && processed<36000 && !result && !userQuit){
+#ifdef RE4_R36S_SHOWCASE
+        if(gShowcaseStopRequested){userQuit=true;break;}
+#endif
         SDL_Event ev{};
 #ifdef RE4_R36S_SHOWCASE
         bool toggleMenu=false,confirmExit=false,cancelExit=false,directExit=false;
@@ -551,6 +571,7 @@ int main(int argc,char**argv) {
         confirmExit |= actions.confirmExit;
         cancelExit |= actions.cancelMenu;
         directExit |= actions.emergencyExit;
+        directExit |= gShowcaseStopRequested!=0;
         if(directExit) {
           if(diagnoseInput)
             fprintf(stderr,"R36S_USER_EXIT=DELIBERATE_LONG_HOLD\\n");
