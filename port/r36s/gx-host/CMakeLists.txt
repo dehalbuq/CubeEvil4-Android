@@ -158,3 +158,20 @@ re4_a35_target(r36s_game_showcase_menuquiet TRUE)
 target_compile_definitions(r36s_game_showcase_menuquiet PRIVATE
   RE4_R36S_SCALABLE_EFB=1 RE4_R36S_SHOWCASE=1 NDEBUG=1
 )
+
+# R36S DarkOSRE input-fix: independently query Linux physical BTN_START/
+# BTN_SELECT via EVIOCGKEY (read-only), alongside SDL controller mappings.
+# Keep the last working demo and A35 core untouched as separate binaries.
+re4_a35_target(r36s_game_showcase_evdev_exit TRUE)
+target_compile_definitions(r36s_game_showcase_evdev_exit PRIVATE
+  RE4_R36S_SCALABLE_EFB=1 RE4_R36S_SHOWCASE=1 NDEBUG=1
+)
+
+# Tiny standalone input scanner, outside the game: logs physical Linux event
+# codes and SDL joystick indices to a file for unusual clone firmware.
+add_executable(r36s_showcase_input_probe r36s_showcase_input_probe.cpp)
+target_compile_options(r36s_showcase_input_probe PRIVATE
+  -O2 -Wall -Wextra -ffp-contract=off
+)
+target_link_libraries(r36s_showcase_input_probe PRIVATE PkgConfig::SDL2)
+
