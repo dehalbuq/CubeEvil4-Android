@@ -9,6 +9,7 @@
 #include <SDL2/SDL.h>
 #include <chrono>
 #include <cstdlib>
+#include "r36s_showcase_evdev_exit.h"
 
 namespace r36s_showcase_exit {
 using Clock = std::chrono::steady_clock;
@@ -119,9 +120,13 @@ class Device {
       owned_=joystick_!=nullptr;
     }
     select_=mapped(SDL_CONTROLLER_BUTTON_BACK,"RE4_SHOWCASE_RAW_SELECT",-1);
-    start_=mapped(SDL_CONTROLLER_BUTTON_START,"RE4_SHOWCASE_RAW_START",9);
+    // Never guess 9: on some clones START uses raw 6/7/15/17, and
+    // a guessed index can alias a gameplay button. Detect the actual
+    // SDL binding, use an explicit override, or query BTN_START via evdev.
+    start_=mapped(SDL_CONTROLLER_BUTTON_START,"RE4_SHOWCASE_RAW_START",-1);
     a_=mapped(SDL_CONTROLLER_BUTTON_A,"RE4_SHOWCASE_RAW_A",-1);
     b_=mapped(SDL_CONTROLLER_BUTTON_B,"RE4_SHOWCASE_RAW_B",-1);
+    evdev_.scan();
   }
 
   // Index range for user-provided firmware override is [0, 63], and
@@ -151,10 +156,15 @@ class Device {
     s.start |= rawDown(start_);
     s.a |= rawDown(a_);
     s.b |= rawDown(b_);
+    const KernelButtons physical=evdev_.poll();
+    s.select |= physical.select;
+    s.start |= physical.start;
     return s;
   }
 
+  void reportEvdev(FILE* out)const {evdev_.report(out);}
   void release(){
+    evdev_.closeAll();
     if(owned_ && joystick_)SDL_JoystickClose(joystick_);
     joystick_=nullptr;
     controller_=nullptr;
@@ -182,6 +192,7 @@ class Device {
   SDL_Joystick* joystick_=nullptr;
   bool owned_=false;
   int select_=-1,start_=-1,a_=-1,b_=-1;
+  EvdevButtons evdev_;
 };
 }
 #endif
