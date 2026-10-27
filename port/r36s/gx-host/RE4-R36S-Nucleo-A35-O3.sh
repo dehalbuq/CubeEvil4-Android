@@ -7,7 +7,7 @@ HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 2
 ROOT="$HERE/cubeevil4_live_gx"
 FAST="$ROOT/core_a35_o3"
 DATA="$ROOT/data"
-FRONT="$ROOT/r36s_game_showcase_a35_o3"
+FRONT="$ROOT/r36s_game_showcase_evdev_exit"
 for file in "$FRONT" "$FAST/re4_coreproc" "$FAST/libre4_main.so" "$FAST/libre4_platform.so" "$FAST/libre4_host.so"; do
   if [ ! -s "$file" ];then
     echo "R36S A35 O3: falta o arquivo $file"
