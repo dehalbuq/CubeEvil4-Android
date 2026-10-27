@@ -1,0 +1,83 @@
+name: R36S - game exit without SDL START mapping (Linux evdev)
+
+on:
+  push:
+    branches:
+      - chatgpt/r36s-exit-evdev-independent-of-sdl
+    paths:
+      - "port/r36s/gx-host/**"
+      - ".github/workflows/r36s-evdev-exit-hardware.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-build-package:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install SDL2, GLES3, and ARM64 compiler
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y g++ cmake ninja-build binutils pkg-config libsdl2-dev libgles-dev
+      - name: Regression tests — no phantom menu, linux BTN_START/SELECT mapping, saves preserved
+        run: |
+          set -eux
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror \
+            -I port/r36s/gx-host \
+            port/r36s/gx-host/test_showcase_evdev_exit.cpp \
+            -o /tmp/test_showcase_evdev_exit
+          /tmp/test_showcase_evdev_exit
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror \
+            $(pkg-config --cflags sdl2) -I port/r36s/gx-host \
+            port/r36s/gx-host/test_showcase_exit_controls.cpp \
+            -o /tmp/test_showcase_exit_controls \
+            $(pkg-config --libs sdl2)
+          /tmp/test_showcase_exit_controls
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror \
+            -I port/r36s/gx-host \
+            port/r36s/gx-host/test_showcase_clean_data.cpp \
+            -o /tmp/test_showcase_clean_data
+          /tmp/test_showcase_clean_data
+      - name: Compile new isolated Cortex-A35 fullscreen presenter plus standalone input mapper
+        run: |
+          set -eux
+          cmake -S port/r36s/gx-host -B port/build/r36s-gx-host -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build port/build/r36s-gx-host \
+            --target r36s_game_showcase_evdev_exit r36s_showcase_input_probe \
+            --parallel 2
+          for file in r36s_game_showcase_evdev_exit r36s_showcase_input_probe; do
+            test -s "port/build/r36s-gx-host/$file"
+            file "port/build/r36s-gx-host/$file"
+            readelf -h "port/build/r36s-gx-host/$file" | grep -E 'Machine:.*AArch64'
+          done
+      - name: Package additive display/audio/gamepad exit fix (do not touch core, ISO, memcard)
+        run: |
+          set -euo pipefail
+          mkdir -p dist/cubeevil4_live_gx
+          cp port/build/r36s-gx-host/r36s_game_showcase_evdev_exit dist/cubeevil4_live_gx/
+          cp port/build/r36s-gx-host/r36s_showcase_input_probe dist/cubeevil4_live_gx/
+          strip --strip-unneeded dist/cubeevil4_live_gx/r36s_game_showcase_evdev_exit
+          strip --strip-unneeded dist/cubeevil4_live_gx/r36s_showcase_input_probe
+          for launcher in RE4-R36S-Demonstracao-Tela-Cheia.sh RE4-R36S-Nucleo-A35-O3.sh RE4-R36S-Mapear-Botoes.sh; do
+            sh -n "port/r36s/gx-host/$launcher"
+            cp "port/r36s/gx-host/$launcher" dist/
+            chmod +x "dist/$launcher"
+          done
+          cp port/r36s/gx-host/README-R36S-EVDEV-EXIT.md dist/LEIA-ME-CORRECAO-SAIDA.md
+          chmod +x dist/cubeevil4_live_gx/r36s_game_showcase_evdev_exit dist/cubeevil4_live_gx/r36s_showcase_input_probe
+          test "$(find dist -type f | wc -l)" -eq 6
+          test ! -e dist/cubeevil4_live_gx/data
+          test ! -e dist/cubeevil4_live_gx/core_a35_o3
+          test ! -e dist/cubeevil4_live_gx/re4_coreproc
+          test ! -e dist/cubeevil4_live_gx/modules
+          ! find dist -type f | grep -Ei '\\.(iso|gcm|das|drs|rel|gci|sav)$|/data/|/memcard/|card-a\\.bin$'
+          du -sh dist
+      - name: Publish R36S exit-hotfix frontend and hardware mapper
+        uses: actions/upload-artifact@v4
+        with:
+          name: CubeEvil4-R36S-CORRECAO-SAIDA-EVDEV-ARM64
+          path: dist/
+          retention-days: 14
