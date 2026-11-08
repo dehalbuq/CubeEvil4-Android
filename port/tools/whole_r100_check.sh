@@ -23,10 +23,32 @@
 # --card-only  after the build only the memory card runs (section 7)
 # --rooms LIST after the build only a round of rooms (section 8): each room
 #              by the debug start, --tour-frames frames of its main loop
-#              (default 1500), one line per room (runs, crash with where,
-#              stand still); LIST: room numbers ("206,300,401"), "set" (two
-#              rooms of every room program rel/stX_Y.rel) or "all" (every
-#              room of the game's room tables, src/game/roomdata.cpp)
+#              (default 6000); once Leon is free he walks, runs, aims, fires,
+#              opens the map and presses A here and there (--tour-script,
+#              "none": no keys); --tour-jobs rooms at once (default: half the
+#              cores). One line per room (runs, crash with where, stand still,
+#              no room start, Leon or an enemy at NaN, a death loop), then the
+#              findings of all rooms (check: lines, deaths, sanitizer reports
+#              ...; port/tools/room_tour_report.py). LIST: room numbers
+#              ("206,300,401"), "set" (two rooms of every room program
+#              rel/stX_Y.rel) or "all" (every room of the game's room tables,
+#              src/game/roomdata.cpp)
+# --armhf      the ARM32 build (armeabi-v7a's code, the core on most devices)
+#              under qemu-arm instead of the 32-bit PC build (i686), for the
+#              room tour (slow)
+# --aarch64    the 64-bit ARM build (arm64-v8a's code) under qemu-aarch64
+#              instead of the 32-bit PC build (i686), for the room tour (slow)
+# --sanitize   the check build with sanitizers (RE4_SANITIZE, default
+#              address,undefined on i686, undefined on the 64-bit targets;
+#              build folder whole-<target>-O2-san): AddressSanitizer stops at a
+#              bad memory access, UndefinedBehaviorSanitizer names undefined
+#              operations
+# --room-info FILE  the debug build's debug/roomInfo.dat, for a round of rooms with discs that lack
+#              it (the European ones): the debug start needs it for any room but r120 (patch 0119).
+#              The run reads a folder of links to the discs (WORK/disc-ri) that holds the file as
+#              well; the discs and the data folder stay as they are. The tour results are kept per
+#              release (rundgang-<target>[-eu|-us].json) and a European or US tour is compared
+#              with the debug discs' one
 # --compare    the 32/64-bit comparison (milestone 12) instead of the normal steps: builds i686
 #              and x86_64, plays both with the same keys (start room as --room, default 120:
 #              the opening movie, the car ride, r100; 30000 frames unless --frames), records the
@@ -61,9 +83,13 @@ host=i686
 build=1
 card_only=0
 rooms=""
-tour_frames=1500
+tour_frames=6000
+tour_jobs=""
+tour_script="wander"
+room_info=""
 reload_weapon=""
 compare=0
+sanitize=0
 room_given=0
 frames_given=0
 while [ $# -gt 0 ]; do
@@ -77,10 +103,16 @@ while [ $# -gt 0 ]; do
     --work) work="$2"; shift 2 ;;
     --arm) arm=1; shift ;;
     --lp64) host=x86_64; shift ;;
+    --armhf) host=armhf; shift ;;
+    --aarch64) host=aarch64; shift ;;
+    --sanitize) sanitize=1; shift ;;
     --no-build) build=0; shift ;;
     --card-only) card_only=1; shift ;;
     --rooms) rooms="$2"; shift 2 ;;
     --tour-frames) tour_frames="$2"; shift 2 ;;
+    --tour-jobs) tour_jobs="$2"; shift 2 ;;
+    --tour-script) tour_script="$2"; shift 2 ;;
+    --room-info) room_info="$2"; shift 2 ;;
     --reload) reload_weapon="$2"; shift 2 ;;
     *) echo "unbekannte Angabe: $1" >&2; exit 2 ;;
     esac
@@ -93,6 +125,14 @@ if [ "$compare" -eq 1 ]; then
     # the comparison starts with the car ride by default and runs into r100
     [ "$room_given" -eq 0 ] && room=120
     [ "$frames_given" -eq 0 ] && frames=30000
+fi
+if [ "$sanitize" -eq 1 ] && [ -z "${RE4_SANITIZE:-}" ]; then
+    # AddressSanitizer only on i686 (CMakeLists.txt: on x86_64 its shadow lies where MEM1 is, under
+    # qemu-aarch64 it does not run); UndefinedBehaviorSanitizer everywhere
+    case "$host" in
+    i686) export RE4_SANITIZE=address,undefined ;;
+    *) export RE4_SANITIZE=undefined ;;
+    esac
 fi
 room=$(echo "$room" | tr 'A-F' 'a-f')
 mkdir -p "$work"
@@ -171,8 +211,13 @@ say "Daten:   $data"
 if [ "$compare" -eq 1 ]; then
     say "Kern:    i686 und x86_64 (Vergleichslauf 32/64 bit)"
 else
-    say "Kern:    $host$([ "$host" = x86_64 ] && echo ' (64 bit, wie arm64-v8a)' || echo ' (32 bit, wie armeabi-v7a)')"
+    case "$host" in
+    x86_64) say "Kern:    x86_64 (64 bit, wie arm64-v8a)" ;;
+    aarch64) say "Kern:    aarch64 (64 bit, der Code von arm64-v8a, unter qemu-aarch64)" ;;
+    *) say "Kern:    $host (32 bit, wie armeabi-v7a)" ;;
+    esac
 fi
+[ -n "${RE4_SANITIZE:-}" ] && say "Prüf-Build mit Sanitizern: $RE4_SANITIZE (Ordner whole-$host-O${RE4_OPT-2}-san)"
 
 # ---- disc data -------------------------------------------------------------------------
 layout=""
@@ -197,7 +242,11 @@ else
     mapfile -t images < <(find "$data" -maxdepth 2 -type f \( -iname '*.iso' -o -iname '*.gcm' \) | sort)
     if [ ${#images[@]} -gt 0 ]; then
         layout="$work/disc"; kind="Disc-Abbilder: ${images[*]##*/}"
-        if ! python3 "$src/port/tools/whole_disc_folder.py" --check "$layout" > /dev/null 2>&1; then
+        # the folder must hold exactly these discs: a run with the debug discs and one with the
+        # European ones (port/docs/retail-eu-plan.md) share the work folder
+        checks=()
+        for i in "${images[@]}"; do checks+=(--disc "$i"); done
+        if ! python3 "$src/port/tools/whole_disc_folder.py" --check "$layout" "${checks[@]}" > /dev/null 2>&1; then
             echo "Disc-Abbilder werden einmalig nach $layout entpackt ..."
             args=()
             for i in "${images[@]}"; do args+=(--disc "$i"); done
@@ -214,7 +263,56 @@ if [ -z "$layout" ]; then
     say "FEHLER: In $data liegen weder entpackte Disc-Dateien (sys/, files/) noch Disc-Abbilder (.iso/.gcm)."
     exit 1
 fi
+# --room-info: a folder of links to the discs plus the debug build's debug/roomInfo.dat (the
+# European discs lack it; the debug start of the tour needs it), made again when its source changes.
+# The runtime finds a file through the disc's file table (sys/fst.bin), so each disc's copy of it
+# gets a folder "Debug" with "roomInfo.dat" appended to the root (disc offset 0: the port reads
+# the file from files/)
+if [ -n "$room_info" ] && [ -z "$(find "$layout"/disc*/files/Debug "$layout"/files/Debug -maxdepth 1 \
+        -iname roominfo.dat 2> /dev/null)" ]; then
+    if [ ! -f "$room_info" ] || [ ! -f "$layout/disc0/sys/fst.bin" ]; then
+        say "FEHLER: --room-info braucht die Datei ($room_info) und Discs in der Form disc0, disc1"
+        exit 1
+    fi
+    ri="$work/disc-ri"
+    ri_source="$(readlink -f "$layout") $(sha1sum < "$room_info" | cut -c1-40)"
+    if [ "$(cat "$ri/.source" 2> /dev/null)" != "$ri_source" ]; then
+        rm -rf "${ri:?}"
+        for d in "$layout"/disc*; do
+            n=${d##*/}
+            mkdir -p "$ri/$n/files/Debug" "$ri/$n/sys"
+            for e in "$d"/sys/*; do
+                [ "${e##*/}" = fst.bin ] || ln -s "$(readlink -f "$e")" "$ri/$n/sys/"
+            done
+            python3 - "$d/sys/fst.bin" "$ri/$n/sys/fst.bin" "$(stat -L -c %s "$room_info")" <<'PY'
+import struct, sys
+fst = bytearray(open(sys.argv[1], "rb").read())
+size = int(sys.argv[3])
+n = struct.unpack_from(">I", fst, 8)[0]
+entries, names = fst[:n * 12], fst[n * 12:]
+# the folder (parent: the root, next: past its one file) and the file, names at the end
+entries += struct.pack(">III", 1 << 24 | len(names), 0, n + 2)
+entries += struct.pack(">III", len(names) + 6, 0, size)
+names += b"Debug\0roomInfo.dat\0"
+struct.pack_into(">I", entries, 8, n + 2)
+open(sys.argv[2], "wb").write(entries + names)
+PY
+            for e in "$d"/files/*; do
+                case "${e##*/}" in [Dd][Ee][Bb][Uu][Gg]) continue ;; esac
+                ln -s "$(readlink -f "$e")" "$ri/$n/files/"
+            done
+            cp "$room_info" "$ri/$n/files/Debug/roomInfo.dat"
+        done
+        echo "$ri_source" > "$ri/.source"
+    fi
+    layout="$ri"; kind="$kind, dazu debug/roomInfo.dat für den Debug-Start ($room_info)"
+fi
 say "Form:    $kind"
+# which release the discs are (port/tools/disc_release.py, the same rule as runtime/dvd.cpp)
+release=$(python3 -c 'import os, sys; sys.path.insert(0, sys.argv[1]); from disc_release import release
+print(next((release(open(b, "rb").read(0x440)) for b in sys.argv[2:] if os.path.isfile(b)), ""))'     "$src/port/tools" "$layout"/disc0/sys/boot.bin "$layout"/sys/boot.bin 2>/dev/null)
+say "Version: ${release:-unbekannt} (debug = Debug-Build G4BE08, retail-eu = europäische Verkaufsversion G4BP08,"
+say "         retail-us = US-Verkaufsversion G4BE08, retail-jp = japanische Verkaufsversion G4BJ08)"
 if [ "$game_ok" -eq 0 ]; then
     say "Hinweis: sys/boot.bin und sys/fst.bin fehlen; der Spiellauf braucht sie (Disc-Abbilder angeben oder"
     say "         mit Dolphin \"Gesamte Disc extrahieren\"). Der Formatvergleich läuft trotzdem."
@@ -225,6 +323,19 @@ fi
 # (empty) checks the unoptimised build instead
 export RE4_OPT="${RE4_OPT-2}"
 opt="${RE4_OPT:+-O$RE4_OPT}"
+# the build folder: whole-<target>-O2, with --sanitize whole-<target>-O2-san
+bsuf="$opt${RE4_SANITIZE:+-san}"
+if [ -n "${RE4_SANITIZE:-}" ]; then
+    # as whole_build.sh; the symbolizer turns addresses into file and line
+    export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=0:detect_odr_violation=0:detect_stack_use_after_return=0:handle_segv=0:handle_sigbus=0:handle_sigfpe=0}"
+    export UBSAN_OPTIONS="${UBSAN_OPTIONS:-print_stacktrace=1:handle_segv=0:handle_sigbus=0:handle_sigfpe=0}"
+    for s in llvm-symbolizer /usr/lib/llvm-18/bin/llvm-symbolizer /usr/bin/llvm-symbolizer-18; do
+        if command -v "$s" > /dev/null; then
+            export ASAN_SYMBOLIZER_PATH="${ASAN_SYMBOLIZER_PATH:-$(command -v "$s")}"
+            break
+        fi
+    done
+fi
 targets=("$host")
 [ "$compare" -eq 1 ] && targets=(i686 x86_64)
 [ "$arm" -eq 1 ] && targets+=(armhf)
@@ -239,7 +350,7 @@ if [ "$build" -eq 1 ]; then
 fi
 
 # ---- format comparison with the disc files ---------------------------------------------
-cmp="$src/port/build/whole-$host$opt/re4_format_compare"
+cmp="$src/port/build/whole-$host$bsuf/re4_format_compare"
 [ "$card_only" -eq 0 ] && [ -z "$rooms" ] && [ -z "$reload_weapon" ] && [ "$compare" -eq 0 ] &&
     section "2. Formatvergleich App-Leser gegen Kern-Umwandler mit Disc-Daten"
 if [ "$card_only" -eq 1 ] || [ -n "$rooms" ] || [ -n "$reload_weapon" ] || [ "$compare" -eq 1 ]; then
@@ -330,17 +441,18 @@ set_game_env() {
         # time each part of the frame took (debug.cpp processBarDisp, OSGetTick), so their digits,
         # and with them the GP counts, depend on how fast the computer was (first compare run
         # 18.10.2026: 2 draws more on i686 in frame 2)
-        GAME_ENV+=(LD_PRELOAD="$src/port/build/whole-$1$opt/libre4_detmath.so" RE4_DEBUG_HUD=0)
+        GAME_ENV+=(LD_PRELOAD="$src/port/build/whole-$1$bsuf/libre4_detmath.so" RE4_DEBUG_HUD=0)
     fi
 }
 
 # target, overall limit, limit until the main loop, stall limit (seconds)
 run_game() {
-    local t="$1" limit="$2" main_limit="$3" stall="$4" dir="$src/port/build/whole-$1$opt"
+    local t="$1" limit="$2" main_limit="$3" stall="$4" dir="$src/port/build/whole-$1$bsuf"
     local log="$run/spiel-$t.log" trace="$run/trace-$t.jsonl" cov="$run/abdeckung-$t.tsv"
     local bridge="$run/bruecke-$t.jsonl" snaps="$run/schnappschuesse-$t" gxdump="$run/gx-$t"
     local runner=() bad=0
-    [ "$t" = armhf ] && runner=(env QEMU_LD_PREFIX=/usr/arm-linux-gnueabihf qemu-arm)
+    set_runner "$t"
+    runner=("${RUNNER[@]}")
     section "3. Spiellauf r$room ($t): Titelbild, Debug-Start, $frames Bilder ab der Hauptschleife"
     if [ ! -x "$dir/re4_host" ]; then
         say "FEHLER: $dir/re4_host fehlt (Build fehlgeschlagen?)"
@@ -926,7 +1038,7 @@ PY
 # CRI errors, the time one step takes; a still every 30 s as PNG
 # (bilder-film/) and the sound of the opening movie as WAV (film-*.wav).
 run_movies() {
-    local dir="$src/port/build/whole-$host$opt" mins="${RE4_CHECK_MOVIE_MINUTES:-15}"
+    local dir="$src/port/build/whole-$host$bsuf" mins="${RE4_CHECK_MOVIE_MINUTES:-15}"
     section "6. Filme der Disc über die CRI-Middleware (ganz, im Schnelllauf)"
     if [ ! -x "$dir/re4_host" ]; then
         say "FEHLER: $dir/re4_host fehlt (Build fehlgeschlagen?)"
@@ -965,7 +1077,7 @@ run_movies() {
             else
                 rm -f "$run/film-$name.wav"
             fi
-        done < <(find "$layout/disc$disc/files" -iname '*.sfd' | sort)
+        done < <(find -L "$layout/disc$disc/files" -iname '*.sfd' | sort)
     done
     if [ "$n" -eq 0 ]; then
         say "Keine .sfd-Dateien gefunden."
@@ -1007,9 +1119,9 @@ run_card_game() {
     local name="$1" limit="$2" dir="$3" log="$run/$1.log"
     shift 3
     (cd "$dir" && exec env RE4_VI_FAST=1 RE4_MEMCARD="$card" RE4_PAD_UNTIL_ROOM=1 RE4_TEST_CARD_YES=1 "$@" \
-        ./re4_host --data "$layout") > "$log" 2>&1 &
+        "${CARD_RUNNER[@]}" ./re4_host --data "$layout") > "$log" 2>&1 &
     local pid=$! start=$SECONDS last_note=$SECONDS reason="" size last_size=-1 last_change=$SECONDS
-    local stall="${RE4_CHECK_CARD_STALL:-120}"
+    local stall=$((${RE4_CHECK_CARD_STALL:-120} * CARD_SLOW))
     while kill -0 "$pid" 2> /dev/null; do
         sleep 2
         size=$(stat -c %s "$log" 2> /dev/null || echo 0)
@@ -1065,8 +1177,13 @@ card_stop() {
     echo "${line:-kein regulärer Stopp}"
 }
 run_memcard() {
-    local dir="$src/port/build/whole-$host$opt" card="$run/speicherkarte-a.bin" bad=0 code
-    local limit="${RE4_CHECK_CARD_LIMIT:-900}"
+    local dir="$src/port/build/whole-$host$bsuf" card="$run/speicherkarte-a.bin" bad=0 code
+    # the ARM targets (--armhf, --aarch64) run under qemu-user, with longer limits (as the tour)
+    set_runner "$host"
+    CARD_RUNNER=("${RUNNER[@]}")
+    CARD_SLOW=1
+    [ ${#CARD_RUNNER[@]} -gt 0 ] && CARD_SLOW=${RE4_TOUR_SLOW:-8}
+    local limit=$((${RE4_CHECK_CARD_LIMIT:-900} * CARD_SLOW))
     section "7. Speicherkarte: Systemdatei anlegen, im Raum speichern, Neustart, im Titel laden"
     if [ ! -x "$dir/re4_host" ]; then
         say "FEHLER: $dir/re4_host fehlt (Build fehlgeschlagen?)"
@@ -1074,7 +1191,7 @@ run_memcard() {
         return
     fi
     rm -f "$card"
-    if ! (cd "$dir" && ./re4_host --memcard-format "$card") > "$run/karte-formatieren.log" 2>&1; then
+    if ! (cd "$dir" && "${CARD_RUNNER[@]}" ./re4_host --memcard-format "$card") > "$run/karte-formatieren.log" 2>&1; then
         say "FEHLER: die Karte ließ sich nicht formatieren (karte-formatieren.log)"
         tail -n 5 "$run/karte-formatieren.log" | sed 's/^/  /' | tee -a "$report"
         overall=1
@@ -1082,9 +1199,20 @@ run_memcard() {
     fi
     say "Karte: speicherkarte-a.bin (2 MB, formatiert, leer)"
     say "Lauf A: Systemdatei anlegen, neues Spiel in r100, dort speichern (Datei 1)"
+    # Discs without debug/roomInfo.dat (the European ones, patch 0119): no debug start in r100, the
+    # new game stays in r120, and saving there never leaves the file list (the debug discs alike,
+    # 26.10.2026). Leon is put at the door to r100 as in the game run, the save follows there.
+    local card_save="free+60,72,stop" card_place="" card_free="A@90-600/30 START@900-3000/120"
+    if [ -z "$(find "$layout"/disc0/files/Debug "$layout"/files/Debug -maxdepth 1 -iname roominfo.dat 2> /dev/null)" ]; then
+        # the keys of the game run take him through (B at free+300, the room changes at once)
+        card_save="free+700,72,stop"
+        card_place="free+1:-82910,860,-38480,1.75"
+        card_free="Z@30 B@300 A@760-1300/30 START@1600-3400/120"
+        say "  (ohne debug/roomInfo.dat: neues Spiel in r120, an der Tür nach r100 abgesetzt, dort gespeichert)"
+    fi
     run_card_game karte-speichern "$limit" "$dir" RE4_START_ROOM=0x100 RE4_ROOM_MENU=1 RE4_STOP_AT_FRAME=30000 \
-        RE4_PAD_SCRIPT="A@100-60000/60 START@130-60000/60" RE4_TEST_SAVE="free+60,72,stop" \
-        RE4_PAD_FREE_SCRIPT="A@90-600/30 START@900-3000/120"
+        RE4_PAD_SCRIPT="A@100-60000/60 START@130-60000/60" RE4_TEST_SAVE="$card_save" RE4_TEST_PLACE="$card_place" \
+        RE4_PAD_FREE_SCRIPT="$card_free"
     code=$?
     local made saved
     made=$(grep -c "card: boot check: making the system file" "$run/karte-speichern.log")
@@ -1136,12 +1264,20 @@ run_memcard() {
     [ "$bad" -ne 0 ] && overall=1
 }
 
-# ---- a round of rooms (--rooms): crashes and stand-stills room by room ----------------------
-# Each room as the game run above starts it (debug start from the title,
-# RE4_START_ROOM), without the walk and the tests after it: the room loads,
-# its opening event runs, the run ends after --tour-frames frames of the main
-# loop. Per room one line; crashes and stand-stills with where the program was.
+# ---- a round of rooms (--rooms): every room by the debug start, crashes, stand-stills, NaN ------
+# Each room as the game run above starts it (debug start from the title, RE4_START_ROOM): the
+# room loads, its opening event runs, then (once Leon is free) the tour's keys; the run ends after
+# --tour-frames frames of the main loop. --tour-jobs rooms run at once, each in a process of its
+# own; port/tools/room_tour_report.py reads their logs (bug hunt, part 2, 22.10.2026).
+# the rooms of LIST ("206,300", "set", "all", or mixed: "222,set"), each once, in order
 tour_list() {
+    local item
+    for item in $(echo "$1" | tr ',;' '  '); do
+        tour_list_item "$item"
+    done | tr ' ' '\n' | awk 'NF && !seen[$0]++' | tr '\n' ' '
+}
+
+tour_list_item() {
     case "$1" in
     set)
         # two rooms of each room program (the first and one further in)
@@ -1161,113 +1297,182 @@ for st in range(1, 5):
 print(" ".join(rooms))
 PY
         ;;
-    *) echo "$1" | tr ',;' '  ' ;;
+    *) echo "$1" ;;
     esac
 }
 
+# The tour's keys once Leon is free (frames from then; runtime/pad.cpp, at most 64 entries):
+# walk, A (a door, an item, a typewriter in front of him), turn, run, walk on, aim and fire five
+# shots while turning, the map (Z) and back (B), walk backwards and in a curve, the knife (L, A),
+# Y and START with B after each; the whole block twice. What a player does in his first minute
+# in a room, without steering anywhere: the room's enemies, events and areas react to it.
+tour_keys() {
+    local block="STICKUP@0-240/1 A@120 STICKRIGHT@240-300/1 STICKUP+B@300-540/1 A@420 STICKLEFT@540-660/1
+        STICKUP@660-840/1 A@800 R@900-1140/1 A@960-1140/40 STICKLEFT@1000-1060/1 Z@1220 B@1400
+        STICKDOWN@1460-1580/1 STICKUP+STICKRIGHT@1600-1800/1 L@1850-2050/1 A@1900-2050/50 Y@2100 B@2250
+        START@2320 B@2450"
+    case "$tour_script" in
+    none) echo "" ;;
+    wander)
+        local e out=""
+        for e in $block; do out="$out $e"; done
+        for e in $block; do
+            # the same entry 2500 frames later
+            out="$out $(echo "$e" | awk -F@ '{split($2, r, "/"); n = split(r[1], f, "-");
+                s = f[1] + 2500; if (n > 1) s = s "-" f[2] + 2500; if (r[2] != "") s = s "/" r[2]; print $1 "@" s}')"
+        done
+        echo "$out"
+        ;;
+    *) echo "$tour_script" ;;
+    esac
+}
+
+# Until Leon is free (frames from the room start): from frame 1500 on A every second, A+B and L+R
+# (the reaction keys of events) and now and then START (skips a cutscene). Rooms that wait for a
+# key (a radio call or hint left open, a reaction in an event, the Mercenaries menu) get on; the
+# first i686 tour (22.10.2026) found 15 rooms where Leon was never free without them.
+tour_room_keys() {
+    [ "$tour_script" = wander ] && echo "A@1500-9000/60 A+B@1530-9000/120 L+R@1590-9000/240 START@1545-9000/600"
+}
+
+# The programs of the ARM targets run under qemu-user (with the C library of the cross compiler).
+# aarch64 with a guest address space of 4 GB (QEMU_RESERVED_VA): without it qemu's own mappings
+# leave holes above 4 GB that re4_host cannot reserve (in WSL 22.10.2026: 53919 pages), and a
+# module loaded later in the game landed there (em23 in r100; re4_check_game_address stops).
+set_runner() {
+    RUNNER=()
+    case "$1" in
+    armhf) RUNNER=(env QEMU_LD_PREFIX=/usr/arm-linux-gnueabihf qemu-arm) ;;
+    aarch64) RUNNER=(env QEMU_LD_PREFIX=/usr/aarch64-linux-gnu QEMU_RESERVED_VA=0x100000000 qemu-aarch64) ;;
+    esac
+}
+
+# one room: tour_room DIR ROOM FOLDER; leaves rROOM.log and rROOM.meta in FOLDER
+tour_room() {
+    local dir="$1" r="$2" tdir="$3"
+    local log="$tdir/r$r.log" trace="$tdir/r$r.jsonl" start=$SECONDS reason=""
+    # limits (seconds) times TOUR_SLOW under qemu: no new frame, no main loop, the whole run
+    local stall=$((${RE4_TOUR_STALL:-90} * TOUR_SLOW)) main_limit=$((${RE4_TOUR_MAIN_LIMIT:-300} * TOUR_SLOW))
+    local limit=$((${RE4_TOUR_LIMIT:-900} * TOUR_SLOW))
+    (cd "$dir" && exec env RE4_VI_FAST=1 RE4_WAIT_TRACE=1 RE4_START_ROOM="0x$r" RE4_PAD_UNTIL_ROOM=1 \
+        RE4_MEMCARD=none RE4_ROOM_MENU=1 RE4_PAD_SCRIPT="$pad_script" RE4_PAD_ROOM_SCRIPT="$TOUR_ROOM_KEYS" \
+        RE4_PAD_FREE_SCRIPT="$TOUR_KEYS" RE4_STOP_AFTER="$tour_frames" RE4_STOP_AT_FRAME=$((tour_frames + 8000)) \
+        RE4_TRACE="$trace" \
+        "${RUNNER[@]}" ./re4_host --data "$layout") > "$log" 2>&1 &
+    local pid=$! size last_size=-1 last_change=$SECONDS
+    while kill -0 "$pid" 2> /dev/null; do
+        sleep 2
+        size=$(stat -c %s "$trace" 2> /dev/null || echo 0)
+        if [ "$size" != "$last_size" ]; then
+            last_size=$size
+            last_change=$SECONDS
+        fi
+        if [ $((SECONDS - last_change)) -ge "$stall" ]; then
+            reason="STILLSTAND (seit $stall s kein neues Bild)"
+        elif [ $((SECONDS - start)) -ge "$main_limit" ] && ! grep -q "run: main loop reached" "$log"; then
+            reason="Hauptschleife nach $main_limit s nicht erreicht"
+        elif [ $((SECONDS - start)) -ge "$limit" ]; then
+            reason="Zeitlimit $limit s"
+        fi
+        if [ -n "$reason" ]; then
+            # backtrace of the running context and the threads' waits into the log, then stop
+            kill -USR1 "$pid" 2> /dev/null
+            sleep $((3 * TOUR_SLOW))
+            kill -KILL "$pid" 2> /dev/null
+            break
+        fi
+    done
+    wait "$pid" 2> /dev/null
+    local code=$? secs=$((SECONDS - start))
+    printf 'room=%s\ncode=%s\nreason=%s\nsecs=%s\nstate=%s\n' "$r" "$code" "$reason" "$secs" \
+        "$(trace_state "$trace")" > "$tdir/r$r.meta"
+    rm -f "$trace"
+    echo "  r$r: Exit-Code $code, $secs s${reason:+, $reason}"
+}
+
 run_tour() {
-    local dir="$src/port/build/whole-$host$opt" list
+    local dir="$src/port/build/whole-$host$bsuf" list count
     list=$(tour_list "$rooms" | tr 'A-F' 'a-f')
-    local count
     count=$(echo $list | wc -w)
-    section "8. Raum-Rundgang: $count Räume, je $tour_frames Bilder ab der Hauptschleife"
+    [ -z "$tour_jobs" ] && tour_jobs=$(($(nproc) / 2))
+    [ "$tour_jobs" -lt 1 ] && tour_jobs=1
+    set_runner "$host"
+    TOUR_SLOW=1
+    [ ${#RUNNER[@]} -gt 0 ] && TOUR_SLOW=${RE4_TOUR_SLOW:-8}
+    TOUR_KEYS=$(tour_keys)
+    TOUR_ROOM_KEYS=$(tour_room_keys)
+    local what="Leon läuft, zielt, schießt und drückt A (sobald er frei ist; vorher ab Bild 1500 A, A+B, L+R, START)"
+    [ -z "$TOUR_KEYS" ] && what="ohne Eingaben"
+    [ "$tour_script" != wander ] && [ -n "$TOUR_KEYS" ] && what="Eingaben: $TOUR_KEYS"
+    section "8. Raum-Rundgang ($host${RE4_SANITIZE:+, Sanitizer $RE4_SANITIZE}): $count Räume, je $tour_frames Bilder ab der Hauptschleife, $tour_jobs gleichzeitig; $what"
     if [ ! -x "$dir/re4_host" ]; then
         say "FEHLER: $dir/re4_host fehlt (Build fehlgeschlagen?)"
         overall=1
         return
     fi
-    local ok=0 bad_rooms="" details="$run/rundgang-einzelheiten.txt"
-    : > "$details"
-    for r in $list; do
-        local log="$run/rundgang-r$r.log" trace="$run/rundgang-r$r.jsonl" start=$SECONDS reason=""
-        (cd "$dir" && exec env RE4_VI_FAST=1 RE4_WAIT_TRACE=1 RE4_START_ROOM="0x$r" RE4_PAD_UNTIL_ROOM=1 \
-            RE4_MEMCARD=none RE4_ROOM_MENU=1 RE4_PAD_SCRIPT="$pad_script" RE4_STOP_AFTER="$tour_frames" \
-            RE4_TRACE="$trace" ./re4_host --data "$layout") > "$log" 2>&1 &
-        local pid=$! size last_size=-1 last_change=$SECONDS
-        while kill -0 "$pid" 2> /dev/null; do
-            sleep 2
-            size=$(stat -c %s "$trace" 2> /dev/null || echo 0)
-            if [ "$size" != "$last_size" ]; then
-                last_size=$size
-                last_change=$SECONDS
-            fi
-            if [ $((SECONDS - last_change)) -ge "${RE4_TOUR_STALL:-90}" ]; then
-                reason="STILLSTAND (seit ${RE4_TOUR_STALL:-90} s kein neues Bild)"
-            elif [ $((SECONDS - start)) -ge "${RE4_TOUR_MAIN_LIMIT:-300}" ] && ! grep -q "run: main loop reached" "$log"; then
-                reason="Hauptschleife nach ${RE4_TOUR_MAIN_LIMIT:-300} s nicht erreicht"
-            elif [ $((SECONDS - start)) -ge "${RE4_TOUR_LIMIT:-900}" ]; then
-                reason="Zeitlimit ${RE4_TOUR_LIMIT:-900} s"
-            fi
-            if [ -n "$reason" ]; then
-                kill -USR1 "$pid" 2> /dev/null
-                sleep 3
-                kill -KILL "$pid" 2> /dev/null
-                break
-            fi
-        done
-        wait "$pid" 2> /dev/null
-        local code=$? secs=$((SECONDS - start)) state line
-        state=$(trace_state "$trace")
-        # the port's own checks ("check: ..."): wrong data it caught and skipped
-        local checks
-        checks=$(grep -c "^\[re4\] check: " "$log")
-        if [ -z "$reason" ] && [ "$code" -eq 0 ] && grep -q "run: stopped after" "$log"; then
-            line="läuft ($(grep -m1 'run: main loop reached' "$log" | grep -o 'at frame [0-9]*' | sed 's/at frame/Hauptschleife ab Bild/'), $secs s)"
-            ok=$((ok + 1))
-            if [ "$checks" -gt 0 ]; then
-                line="$line, $checks Hinweise der Prüfungen"
-                {
-                    echo "== r$r: $line"
-                    grep "^\[re4\] check: " "$log" | head -n 10 | sed 's/^\[re4\] /  /'
-                    echo
-                } >> "$details"
-            fi
-        else
-            if grep -q "fatal signal" "$log"; then
-                # where: library + offset and the function (readable with c++filt)
-                local where
-                where=$(grep -m1 'pc 0x' "$log" | sed 's/^\[re4\] *//; s/.*= //; s|^.*/||')
-                command -v c++filt > /dev/null && where=$(echo "$where" | c++filt)
-                line="ABSTURZ bei $state: $where"
-            elif [ -n "$reason" ]; then
-                line="$reason bei $state"
-            else
-                line="FEHLER (Exit-Code $code) bei $state"
-            fi
-            bad_rooms="$bad_rooms r$r"
-            {
-                echo "== r$r: $line"
-                grep -E "fatal signal|  pc 0x|stub called|OSPanic|error|Error" "$log" | grep -v "pad: frame" | sed 's/^\[re4\] /  /' | head -n 12
-                if grep -q "fatal signal\|backtrace of the running context" "$log"; then
-                    sed -n '/fatal signal\|backtrace of the running context/,$p' "$log" | grep -v "pad: frame" | head -n 90 | sed 's/^/  /'
-                fi
-                # what the game and the format converter said before it stopped
-                # (the backtrace above is the end of the log)
-                echo "  letzte Zeilen davor:"
-                sed '/fatal signal\|backtrace of the running context/,$d' "$log" | grep -v "pad: frame" |
-                    tail -n 30 | sed 's/^/    /'
-                echo "  Meldungen des Formatumwandlers (die letzten 10):"
-                grep "formats: " "$log" | tail -n 10 | sed 's/^\[re4\] /    /'
-                echo "  Umwandlungen, die abbrachen (alle, höchstens 20):"
-                grep "formats: .*conversion stopped" "$log" | sort -u | head -n 20 | sed 's/^\[re4\] /    /'
-                if [ "$checks" -gt 0 ]; then
-                    echo "  Hinweise der Prüfungen:"
-                    grep "^\[re4\] check: " "$log" | head -n 10 | sed 's/^\[re4\] /    /'
-                fi
-                echo
-            } >> "$details"
-        fi
-        say "  r$r: $line"
-        rm -f "$trace"
-    done
-    say "Ergebnis: $ok von $count Räumen laufen${bad_rooms:+; Probleme:$bad_rooms}"
-    if [ -n "$bad_rooms" ]; then
+    if [ ${#RUNNER[@]} -gt 0 ] && ! command -v "${RUNNER[-1]}" > /dev/null; then
+        say "FEHLER: ${RUNNER[-1]} fehlt (sudo $src/port/tools/whole_setup_linux.sh)"
         overall=1
+        return
     fi
-    if [ -s "$details" ]; then
-        say "Einzelheiten (rundgang-einzelheiten.txt):"
-        head -n 800 "$details" | tee -a "$report"
+    local tdir="$run/rundgang" r
+    rm -rf "$tdir"
+    mkdir -p "$tdir"
+    echo "  (ein Raum nach dem anderen fertig:)"
+    for r in $list; do
+        while [ "$(jobs -rp | wc -l)" -ge "$tour_jobs" ]; do
+            wait -n 2> /dev/null || sleep 1
+        done
+        tour_room "$dir" "$r" "$tdir" &
+    done
+    wait
+    local json="$run/rundgang.json" code
+    python3 "$src/port/tools/room_tour_report.py" "$tdir" --rooms "$list" --details "$run/rundgang-einzelheiten.txt" \
+        --json "$json" | tee -a "$report"
+    code=${PIPESTATUS[0]}
+    [ "$code" -ne 0 ] && overall=1
+    # the results of each build stay in the work folder, room by room (a tour of a few rooms
+    # replaces only those); a tour of another target is compared with the i686 results (same keys,
+    # so the same rooms should give the same result)
+    # (per release: the European discs' results in rundgang-<target>-eu.json, compared with the
+    # debug discs' of the same target: the game's messages that only one release gives as well)
+    local rel_suffix="" cheats=""
+    [ "$release" = retail-eu ] && rel_suffix="-eu"
+    [ "$release" = retail-us ] && rel_suffix="-us"
+    [ "$release" = retail-jp ] && rel_suffix="-jp"
+    # a tour with the cheats of the app's menu (RE4_CHEATS=<bits>, runtime/cheats.cpp) keeps its
+    # results apart as well (-cheatsN) and is compared with the tour without them
+    [ "${RE4_CHEATS:-0}" != 0 ] && cheats="-cheats$RE4_CHEATS"
+    python3 "$src/port/tools/room_tour_report.py" --merge "$json" "$work/rundgang-$host$bsuf$rel_suffix$cheats.json"
+    local ref="$work/rundgang-i686$opt$rel_suffix$cheats.json"
+    if [ "$host$bsuf" != "i686$opt" ] && [ -f "$ref" ]; then
+        python3 "$src/port/tools/room_tour_report.py" --compare "$ref" "$json" --names "i686,$host$bsuf" |
+            tee -a "$report"
     fi
+    ref="$work/rundgang-$host$bsuf$cheats.json"
+    if [ -n "$rel_suffix" ] && [ -f "$ref" ]; then
+        python3 "$src/port/tools/room_tour_report.py" --compare "$ref" "$json" --names "debug,${rel_suffix#-}" --messages |
+            tee -a "$report"
+    fi
+    ref="$work/rundgang-$host$bsuf$rel_suffix.json"
+    if [ -n "$cheats" ] && [ -f "$ref" ]; then
+        python3 "$src/port/tools/room_tour_report.py" --compare "$ref" "$json" --names "ohne,cheats" |
+            tee -a "$report"
+    fi
+    if [ -s "$run/rundgang-einzelheiten.txt" ]; then
+        say "Einzelheiten (rundgang-einzelheiten.txt, die ersten 400 Zeilen):"
+        head -n 400 "$run/rundgang-einzelheiten.txt" | tee -a "$report"
+    fi
+    # all logs packed (rundgang-logs.tar.gz); those of the rooms with errors also stay as they are
+    (cd "$tdir" && tar -czf ../rundgang-logs.tar.gz r*.log && rm -f r*.meta) 2> /dev/null
+    python3 - "$json" "$tdir" <<'PY'
+import json, sys
+from pathlib import Path
+bad = {r["room"] for r in json.load(open(sys.argv[1])) if r["errors"]}
+for p in Path(sys.argv[2]).glob("r*.log"):
+    if p.stem[1:] not in bad:
+        p.unlink()
+PY
 }
 
 # ---- the reload check (--reload W): weapon W in r100 (M11) ---------------------------------
@@ -1285,7 +1490,7 @@ run_tour() {
 # the player's reload motion ran, how close his left hand came to the gun,
 # what the weapon object did) and has GX pictures of both reloads.
 run_reload() {
-    local dir="$src/port/build/whole-$host$opt" log="$run/nachladen.log" trace="$run/nachladen.jsonl"
+    local dir="$src/port/build/whole-$host$bsuf" log="$run/nachladen.log" trace="$run/nachladen.jsonl"
     local dump="$run/gx-$host"
     section "8. Nachlade-Prüfung: Waffe $reload_weapon in r100, mit gehaltenem und mit losgelassenem Zielen"
     if [ ! -x "$dir/re4_host" ]; then
@@ -1398,7 +1603,7 @@ run_compare() {
         local last=${first##*,}
         say "GX-Daten am ersten Unterschied (und am ersten im Raum, Schritt 3; Bilder $first): je ein kurzer Lauf bis dorthin"
         for t in i686 x86_64; do
-            local dir="$src/port/build/whole-$t$opt" dump="$run/gx-vergleich-$t"
+            local dir="$src/port/build/whole-$t$bsuf" dump="$run/gx-vergleich-$t"
             rm -rf "$dump"
             mkdir -p "$dump" "$run/gx-$t"
             set_game_env "$t"

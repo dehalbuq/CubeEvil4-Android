@@ -32,7 +32,7 @@
 namespace re4ipc {
 
 const uint32_t kMagic = 0x43344552;  // "RE4C"
-const uint32_t kVersion = 3;
+const uint32_t kVersion = 4;
 // the socket in the core process: file 3, inherited
 const int kSocketFd = 3;
 
@@ -61,6 +61,24 @@ enum MsgType : uint32_t {
     kCardImport = 20,  // a = replace, c = note size; payload: .gci -> a = result; text: note
     kHang = 21,        // a = seconds: where the game thread is, into the crash file (no reply)
     kCrashFile = 22,   // fd: the crash file (no reply)
+    kSetLetterbox = 23,  // a = off (no reply)
+    kTouch = 24,         // a, b = the tap's u, v as float bits (no reply)
+    kSwipe = 25,         // a = 1 next tab, -1 the one before (no reply)
+    kSlash = 26,         // a = the swipe's tilt as float bits (no reply)
+    kInstant = 28, // a = operation -> result; data: Re4InstantInfo
+    kSetFastCores = 27,  // a = on: Force Performance (no reply)
+    kRestartGame = 29,   // a = the game's language with the European discs, 2..6 (0: as it is): restart (no reply)
+    kDiscProblem = 30,   // -> text: re4_core_disc_problem
+    kSetCheats = 31,     // a = the cheat switches (no reply)
+    kCheatAction = 32,   // a = the cheat button -> a = result (re4_core_cheat_action)
+    kAimTurn = 33,       // a, b = a swipe's yaw, pitch as float bits (no reply; re4_core_aim_turn)
+    kSetPotato = 34,     // a = the Potato mode bits (no reply; re4_core_set_potato)
+    kSetAim = 35,        // a = the aim settings (no reply; re4_core_set_aim)
+    kSetSoundVolume = 36,  // a = music | effects << 8, percent (no reply; re4_core_set_sound_volume)
+    kSetLaserColour = 38,  // a = the laser sight's colour 0..3 (no reply; re4_core_set_laser_colour)
+    kRoomOutline = 37,     // a = max edges -> a = edges; data: 2 words info, then 5 floats an edge (re4_core_room_outline)
+    kSetViewAspect = 39,   // a = the 3D's aspect x 10000, 0 the game's (no reply; re4_core_set_view_aspect, "Native")
+    kSetHudLayout = 40,    // a = rows, b = stretch x 10000, c = flags (no reply; re4_core_set_hud_layout)
 };
 
 struct MsgHeader {
@@ -112,6 +130,7 @@ struct Control {
     uint32_t pid;
     uint32_t snapshotOffset;  // three Re4CoreSnapshot from here
     uint32_t audioOffset;     // kAudioFrames * audioChannels int16 from here
+    uint32_t depthOffset;     // RE4_GX_DEPTH_W * RE4_GX_DEPTH_H uint32 from here (the app writes)
     // 6 per frame: the stereo (re4_core_audio), then front left, front right, rear left, rear
     // right (re4_core_audio4, Dolby Pro Logic II): one read of the core for both, the app plays one
     uint32_t audioChannels, audioRate;
@@ -135,6 +154,10 @@ struct Control {
     // the state frames: the index of the middle buffer | kSnapshotNew
     std::atomic<uint32_t> snapshotMiddle;
     uint32_t snapshotHashLo[3], snapshotHashHi[3];  // RE4_CORE_IPC_CHECK=1
+
+    // the depth of the last picture for the game's GXPeekZ: the app's renderer writes the cells at
+    // depthOffset, then the serial (re4_gx_frame.h, runtime/gx_fifo.cpp); the core process reads cells
+    alignas(64) std::atomic<uint32_t> depthSerial;
 
     // GX: the app's detach count, and the count and time (ms) of its last poll
     alignas(64) std::atomic<uint32_t> appEpoch, pollEpoch, pollMs;

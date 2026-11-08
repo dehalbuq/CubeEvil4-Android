@@ -21,10 +21,22 @@ WSL2 (Ubuntu). Dieses Skript erledigt alles von Windows aus:
 
 Raum-Rundgang (-Rooms): statt Spiellauf, Filmen und Speicherkarte startet das
 Skript nach dem Build jeden angegebenen Raum ueber den Debug-Start und laesst
-ihn -TourFrames Bilder laufen (Standard 1500); der Bericht hat eine Zeile je
-Raum (laeuft / Absturz mit Stelle / Stillstand). -Rooms 206,300,401 nimmt diese
-Raeume, -Rooms set zwei Raeume je Raumprogramm (27 Raeume, etwa eine halbe
-Stunde), -Rooms all jeden Raum des Spiels (etwa 150, mehrere Stunden).
+ihn -TourFrames Bilder laufen (Standard 6000, gut eine Spielminute). Sobald Leon
+frei ist, laeuft er, rennt, dreht sich, zielt, schiesst, oeffnet die Karte und
+drueckt ab und zu A (Tueren, Gegenstaende); -TourScript none laesst ihn stehen.
+-TourJobs Raeume laufen gleichzeitig (Standard: halb so viele wie Prozessorkerne).
+Der Bericht hat eine Zeile je Raum und sammelt danach: Abstuerze mit Stelle,
+Stillstaende (Haenger), Raeume, die nicht starten, ungueltige Positionen ("not a
+number"), Todesschleifen, die "check:"-Hinweise des Ports, Tode und Raumwechsel.
+-Rooms 206,300,401 nimmt diese Raeume, -Rooms set zwei Raeume je Raumprogramm
+(27 Raeume), -Rooms all jeden Raum des Spiels (126, auf dem PC etwa 10 Minuten).
+-Sanitize nimmt dafuer den Pruef-Build mit Sanitizern (meldet Speicherfehler
+sofort, mit Datei und Zeile; etwa dreimal langsamer; mit -Arm64 nur UBSan, die
+Pruefung undefinierter Rechenschritte), -Arm64 den ARM64-Build unter qemu (wie
+arm64-v8a, aber viel langsamer, etwa eine Stunde fuer alle Raeume; der Bericht
+vergleicht danach mit dem letzten i686-Rundgang).
+-Arm32 nimmt den ARM32-Build unter qemu (wie armeabi-v7a, der Kern auf den meisten
+Geraeten; ebenfalls langsam, mit -Sanitize nur UBSan).
 
 Nachlade-Pruefung (-Reload WAFFE): statt Spiellauf, Filmen und Speicherkarte
 startet das Skript r100, gibt Leon die Waffe (15 = Super Magnum) wie das
@@ -37,7 +49,10 @@ Disc-Daten (-DataDir), eine dieser Formen:
   - ein Ordner mit den Disc-Abbildern (.iso oder .gcm), z. B. D:\RE4\Disc
   - mit Dolphin entpackte Disc ("Gesamte Disc extrahieren": Ordner mit sys und files)
   - der Import-Ordner der App (disc1, disc2) oder ein Port-Ordner (disc0, disc1)
-Die Disc-Daten werden nie ins Repository kopiert.
+Die Disc-Daten werden nie ins Repository kopiert. Die Debug-Discs (G4BE08), die
+europaeischen Verkaufs-Discs (G4BP08, port/docs/retail-eu-plan.md) und die US-Verkaufs-Discs
+(G4BE08 mit anderer Dateitabelle, port/docs/retail-us-plan.md) gehen alle; Abbilder
+einer anderen Version als beim letzten Lauf werden neu entpackt, gemischte Discs abgelehnt.
 
 Vorher den Branch der aktuellen Aufgabe holen (Name steht in der Aufgabe), z. B.:
   git fetch origin
@@ -52,10 +67,30 @@ powershell -ExecutionPolicy Bypass -File .\port\scripts\test-r100-core.ps1 -Data
 Falls Windows das Ausfuehren von Skripten sperrt.
 
 .EXAMPLE
+.\port\scripts\test-r100-core.ps1 -DataDir 'E:\Development\Android\RE4-DiscdataEuro'
+Mit den europaeischen Verkaufs-Discs (Meilenstein Retail-Discs).
+
+.EXAMPLE
+.\port\scripts\test-r100-core.ps1 -DataDir 'E:\Development\Android\RE4-DiscdataUS'
+Mit den US-Verkaufs-Discs (die .rvz daneben liest die Pruefung nicht, nur .iso/.gcm).
+
+.EXAMPLE
 .\port\scripts\test-r100-core.ps1 -DataDir 'D:\RE4\Disc' -OnlyCard
 
 .EXAMPLE
 .\port\scripts\test-r100-core.ps1 -Rooms set
+
+.EXAMPLE
+.\port\scripts\test-r100-core.ps1 -Rooms all -Sanitize
+Der Rundgang ueber alle Raeume mit dem Pruef-Build mit Sanitizern.
+
+.EXAMPLE
+.\port\scripts\test-r100-core.ps1 -Rooms all -Arm64
+Der Rundgang mit dem ARM64-Build unter qemu.
+
+.EXAMPLE
+.\port\scripts\test-r100-core.ps1 -Rooms all -Arm32
+Der Rundgang mit dem ARM32-Build unter qemu.
 
 .EXAMPLE
 .\port\scripts\test-r100-core.ps1 -Reload 15
@@ -87,7 +122,12 @@ param(
     [switch]$Compare,
     [switch]$OnlyCard,
     [string]$Rooms = '',
-    [int]$TourFrames = 1500,
+    [int]$TourFrames = 6000,
+    [int]$TourJobs = 0,
+    [string]$TourScript = '',
+    [switch]$Sanitize,
+    [switch]$Arm64,
+    [switch]$Arm32,
     [int]$Reload = 0,
     [switch]$SkipSetup,
     [string]$Distro = ''
@@ -148,6 +188,11 @@ if ($Lp64) { $checkArgs += '--lp64' }
 if ($Compare) { $checkArgs += '--compare' }
 if ($OnlyCard) { $checkArgs += '--card-only' }
 if ($Rooms) { $checkArgs += @('--rooms', $Rooms, '--tour-frames', "$TourFrames") }
+if ($TourJobs -gt 0) { $checkArgs += @('--tour-jobs', "$TourJobs") }
+if ($TourScript) { $checkArgs += @('--tour-script', $TourScript) }
+if ($Sanitize) { $checkArgs += '--sanitize' }
+if ($Arm64) { $checkArgs += '--aarch64' }
+if ($Arm32) { $checkArgs += '--armhf' }
 if ($Reload -gt 0) { $checkArgs += @('--reload', "$Reload") }
 Write-Host 'Pruefung laeuft (Build beim ersten Mal 10 bis 30 Minuten, danach schneller) ...'
 & wsl.exe @wslBase --exec bash "$repoWsl/port/tools/whole_r100_check.sh" @checkArgs

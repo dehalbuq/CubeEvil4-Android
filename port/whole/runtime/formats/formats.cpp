@@ -19,6 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <time.h>
 
 namespace re4fmt {
 
@@ -474,6 +475,23 @@ using namespace re4fmt;
 // it found and whether the converter turned that entry into host order. Each
 // entry is reported once per load; RE4_COVERAGE_LOG=FILE also appends a
 // tab-separated line (archive, tag, number, address, status).
+// What the converter did with an archive entry (EntryStatus; 0 unknown): GetDataExt's coverage
+// line below, and the core tests.
+extern "C" int re4_formats_entry_status(const void* entry)
+{
+    u32 s = slotOf(entry);
+    for (u32 i = 0; i < kNotes; i++) {
+        const EntryNote& e = g_notes[(s + i) % kNotes];
+        if (e.addr == 0) {
+            break;
+        }
+        if (e.addr == entry) {
+            return e.status;
+        }
+    }
+    return 0;
+}
+
 extern "C" void re4_formats_get_data(const void* arc, const char* tag, int no, const void* entry)
 {
     if (entry == 0) {
@@ -489,20 +507,11 @@ extern "C" void re4_formats_get_data(const void* arc, const char* tag, int no, c
     if (nReported < 4096) {
         reported[nReported++] = entry;
     }
-    const char* status = "nein (unbekannter Eintrag)";
-    u32 s = slotOf(entry);
-    for (u32 i = 0; i < kNotes; i++) {
-        const EntryNote& e = g_notes[(s + i) % kNotes];
-        if (e.addr == 0) {
-            break;
-        }
-        if (e.addr == entry) {
-            status = e.status == kEntryConverted ? "ja"
-                     : e.status == kEntryIncomplete ? "nein (unvollständig)"
-                                                    : "nein (kein Umwandler)";
-            break;
-        }
-    }
+    int e = re4_formats_entry_status(entry);
+    const char* status = e == kEntryConverted    ? "ja"
+                         : e == kEntryIncomplete ? "nein (unvollständig)"
+                         : e == kEntryNoConverter ? "nein (kein Umwandler)"
+                                                  : "nein (unbekannter Eintrag)";
     const char* name = "?";
     int slot = archiveSlot(arc);
     if (slot >= 0) {
@@ -628,6 +637,115 @@ char g_packedName[64];
 
 }  // namespace
 
+// The time loading costs the game's thread (a tester's report, 01.11.2026: are the conversions behind the
+// stutters?): each conversion and Yz2 unpacking of 20 ms or more into the log (at most 100 lines a run), and
+// every 10 s with loading a summary: the files, the time in all, the longest.
+extern "C" long long re4_formats_now_ns(void)
+{
+    timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (long long) t.tv_sec * 1000000000LL + t.tv_nsec;
+}
+
+extern "C" void re4_formats_timed(const char* label, unsigned bytes, long long ns, const char* what)
+{
+    static int lines;
+    static long long windowStart, windowNs, longestNs;
+    static unsigned windowFiles;
+    static char longest[128];
+    const long long ms = ns / 1000000;
+    if (ms >= 20 && lines < 100) {
+        lines++;
+        re4_log("formats: %s (%u bytes) took %lld ms to %s", label, bytes, ms, what);
+    }
+    const long long now = re4_formats_now_ns();
+    if (windowFiles == 0) {
+        windowStart = now;
+    }
+    windowFiles++;
+    windowNs += ns;
+    if (ns > longestNs) {
+        longestNs = ns;
+        snprintf(longest, sizeof(longest), "%s, %s", label, what);
+    }
+    if (now - windowStart >= 10000000000LL) {
+        re4_log("formats: %u files in the last %.0f s, %.1f ms on the game's thread in all, the longest %.1f ms (%s)",
+                windowFiles, (double) (now - windowStart) / 1e9, (double) windowNs / 1e6, (double) longestNs / 1e6,
+                longest);
+        windowFiles = 0;
+        windowNs = longestNs = 0;
+    }
+}
+
+namespace {
+
+// Archives the European release orders differently (port/docs/retail-eu-plan.md, R2): the same
+// entries, a few at other places. The game's code (the debug build's) takes entries by index
+// (PL_ARC, SS_ARC_PTR); the table of such an archive is put back into the debug build's order
+// before anything reads it. Found by comparing the European code with the debug build's:
+//  - em/pl0a.drs (Krauser): the texture the debug build has at entry 7 is the European entry 12,
+//    the five models behind it moved up by one (cPlKlauser::setModel / setHead, the sub screen's
+//    klauserModelInit / wep36Init read 0xA/0x10, 0xD, 0xE/0xF, 0xB there);
+//  - ss/cmn/ss_wep40.dat (Ada's semi-auto rifle): the European file has a second rifle model at
+//    entry 2 (wep40Init picks entry 1 or 2), hand and motion follow at 3 and 4; the second rifle
+//    goes to the end, where the debug build's wep40Init does not look.
+// Each rule checks the European order first (count and the tags of the moved entries), so a
+// debug disc, or a table already put back, is left alone.
+struct RetailOrder {
+    const char* name;
+    u32 count;
+    u32 first;        // the moved range: entries first .. first + n - 1
+    u32 n;
+    const char* euTags;  // their tags in the European order, 4 bytes each
+    u8 from[8];       // debug entry first + i is the European entry first + from[i]
+};
+
+const RetailOrder kRetailOrder[] = {
+    { "em/pl0a.drs", 146, 6, 8, "BIN\0BIN\0BIN\0BIN\0BIN\0TPL\0TPL\0TPL\0", { 0, 6, 1, 2, 3, 4, 5, 7 } },
+    { "ss/cmn/ss_wep40.dat", 5, 1, 4, "BIN\0BIN\0BIN\0FCV\0", { 0, 2, 3, 1 } },
+};
+
+bool retailOrder(Blob& b, const char* name)
+{
+    for (const RetailOrder& r : kRetailOrder) {
+        if (strcmp(name, r.name) != 0) {
+            continue;
+        }
+        if (b.size < 0x10 + r.count * 8 || be32(b, 0) != r.count) {
+            return false;
+        }
+        u8* offs = b.data + 0x10 + r.first * 4;
+        u8* tags = b.data + 0x10 + r.count * 4 + r.first * 4;
+        if (memcmp(tags, r.euTags, r.n * 4) != 0) {
+            return false;  // not the European order: the debug build's, or already put back
+        }
+        u8 o[32], t[32];
+        memcpy(o, offs, r.n * 4);
+        memcpy(t, tags, r.n * 4);
+        for (u32 i = 0; i < r.n; i++) {
+            memcpy(offs + i * 4, o + r.from[i] * 4, 4);
+            memcpy(tags + i * 4, t + r.from[i] * 4, 4);
+        }
+        char key[96];
+        snprintf(key, sizeof(key), "retail order %s", name);
+        if (firstReport(key)) {
+            re4_log("formats: %s: entries %u..%u put into the debug build's order (retail release)", name,
+                    (unsigned) r.first, (unsigned) (r.first + r.n - 1));
+        }
+        return true;
+    }
+    return false;
+}
+
+}  // namespace
+
+// The step above alone, on a big-endian archive body (the runtime tests): 1 when reordered.
+extern "C" int re4_formats_retail_order(void* data, unsigned size, const char* name)
+{
+    Blob b = blob(data, size, name);
+    return retailOrder(b, name) ? 1 : 0;
+}
+
 extern "C" void re4_formats_part_loaded(const char* rawName, int nest, int index, const void* header, unsigned addr)
 {
     const DvdHeader* h = (const DvdHeader*) header;
@@ -647,15 +765,24 @@ extern "C" void re4_formats_part_loaded(const char* rawName, int nest, int index
         return;  // DSP-ADPCM samples: read by the audio layer (M8)
     }
     if (h->type == TRANS_SND_BLK) {
+        const long long t0 = re4_formats_now_ns();
         convertSoundBlock(b, part);
+        re4_formats_timed(label, (unsigned) h->size, re4_formats_now_ns() - t0, "convert");
         return;
+    }
+    if (re4_disc_retail()) {  // the European, US and Japanese releases order them alike
+        retailOrder(b, name);
     }
     for (const Rule& r : kRules) {
         if (fnmatch(r.pattern, name, 0) == 0) {
             if (r.convert == packed) {
                 snprintf(g_packedName, sizeof(g_packedName), "%s", name);
             }
+            // a slow conversion stalls the game's thread (the user reports of a stutter in r101 with
+            // evd/r101s21.evd, 30.10.2026): re4_formats_timed
+            const long long t0 = re4_formats_now_ns();
             r.convert(b, part);
+            re4_formats_timed(label, (unsigned) h->size, re4_formats_now_ns() - t0, "convert");
             if (firstReport(name)) {
                 re4_log("formats: %s: %s%s", label, r.what, b.ok ? "" : " (incomplete)");
             }
@@ -676,7 +803,9 @@ extern "C" void re4_formats_unpacked(void* dst, unsigned size)
     snprintf(label, sizeof(label), "%s (unpacked)", g_packedName[0] ? g_packedName : "yz2 stream");
     Blob b = blob(dst, size, label);
     Part part = { g_packedName[0] ? g_packedName : label, 0, 0, TRANS_MRAM, 0, 0xFFFFFFFFu };
+    const long long t0 = re4_formats_now_ns();
     convertArchive(b, part);
+    re4_formats_timed(label, size, re4_formats_now_ns() - t0, "convert");
     re4_log("formats: %s: archive, %u bytes%s", label, size, b.ok ? "" : " (incomplete)");
 }
 

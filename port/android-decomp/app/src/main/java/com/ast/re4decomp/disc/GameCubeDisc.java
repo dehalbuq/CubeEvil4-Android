@@ -8,6 +8,19 @@ import java.util.*;
 
 /** Bounded reader for raw GameCube ISO/GCM images. Not an ISO9660 reader. */
 public final class GameCubeDisc implements Closeable {
+  /**
+   * The releases the app takes (port/docs/retail-eu-plan.md, retail-us-plan.md, retail-jp-plan.md): the
+   * debug build of 2004-11-25 (G4BE08, its file system table at 0x28FE00), the US release (the same id, the
+   * table elsewhere), the European release (G4BP08), the Japanese release (G4BJ08) and the Korean fan
+   * translation built on it (the same header; its main.dol differs in two instructions, KOREAN_DOL).
+   * The rule of port/tools/disc_release.py.
+   */
+  public static final String DEBUG = "debug", EUROPEAN = "eu", US = "us", JAPANESE = "jp", KOREAN = "kr";
+  private static final long DEBUG_FST_OFFSET = 0x28FE00L;
+  /** The Korean translation's main.dol: at these file offsets "li r30, 1" / "li r31, 1" (retail-jp-plan.md). */
+  private static final long[][] KOREAN_DOL = {{0x14b7cL, 0x3bc00001L}, {0x29cd4L, 0x3be00001L}};
+  /** Core mode: the retail discs too (the classic mode's own game modules know the debug build only). */
+  public static volatile boolean retailAllowed;
   private static final String[] UNUSED_LANGUAGES = {"jpn", "ger", "fra", "esp", "ita"};
   private static final Set<String> UNUSED_CARD_ASSETS = new HashSet<>(Arrays.asList(
       "files/ss/cmn/save_j.dat", "files/ss/cmn/save_g.dat",
@@ -34,6 +47,10 @@ public final class GameCubeDisc implements Closeable {
   private final long length;
   private long fstOffset, fstSize;
   public final int discNumber;
+  /** DEBUG, EUROPEAN, US, JAPANESE or KOREAN. */
+  public final String release;
+  /** References of this disc checked by validate (0 before). */
+  private int validated;
   public final List<Entry> files;
   private final Map<String, Entry> byPath = new HashMap<>();
 
@@ -44,8 +61,25 @@ public final class GameCubeDisc implements Closeable {
       byte[] header = read(0, 0x440);
       if (be32(header, 0x1c) != 0xc2339f3dL)
         throw new IOException("Not a raw GameCube ISO/GCM file");
-      if (!new String(header, 0, 6, StandardCharsets.US_ASCII).equals("G4BE08"))
-        throw new IOException("Wrong disc ID; G4BE08 is required");
+      String id = new String(header, 0, 6, StandardCharsets.US_ASCII);
+      if (id.equals("G4BP08")) {
+        if (!retailAllowed)
+          throw new IOException("European discs (G4BP08) need CubeEvil4's core mode");
+        release = EUROPEAN;
+      } else if (id.equals("G4BJ08")) {
+        if (!retailAllowed)
+          throw new IOException("Japanese discs (G4BJ08) need CubeEvil4's core mode");
+        release = koreanDol(be32(header, 0x420)) ? KOREAN : JAPANESE;
+      } else if (id.equals("G4BE08")) {
+        if (be32(header, 0x424) == DEBUG_FST_OFFSET)
+          release = DEBUG;
+        else if (!retailAllowed)
+          throw new IOException("US discs (G4BE08) need CubeEvil4's core mode");
+        else
+          release = US;
+      } else
+        throw new IOException("Wrong disc ID " + id.replaceAll("[^A-Za-z0-9]", "?")
+            + "; the debug build or the US release (G4BE08), the European (G4BP08) or the Japanese release (G4BJ08) is required");
       discNumber = (header[6] & 255) + 1;
       if (discNumber < 1 || discNumber > 2 || header[7] != 0)
         throw new IOException("Unsupported disc/revision");
@@ -120,6 +154,14 @@ public final class GameCubeDisc implements Closeable {
       throw e;
     }
   }
+  /** The Korean translation's main.dol at `dol` (the Japanese one otherwise; a short image is not). */
+  private boolean koreanDol(long dol) throws IOException {
+    for (long[] w : KOREAN_DOL) {
+      if (dol + w[0] + 4 > length || be32(read(dol + w[0], 4), 0) != w[1])
+        return false;
+    }
+    return true;
+  }
   public static long be32(byte[] b, int o) throws IOException {
     if (o < 0 || o > b.length - 4)
       throw new IOException("Truncated data field");
@@ -158,7 +200,7 @@ public final class GameCubeDisc implements Closeable {
     for (ReferenceCatalog.Entry r : catalog.entries)
       if (r.disc == discNumber)
         total++;
-    if (total != (discNumber == 1 ? 111 : 5))
+    if (total == 0)
       throw new IOException("Missing references");
     for (ReferenceCatalog.Entry r : catalog.entries) {
       if (r.disc != discNumber)
@@ -169,9 +211,33 @@ public final class GameCubeDisc implements Closeable {
         throw new IOException("Truncated original module: " + r.path);
       String hash = digest(e.offset + r.offset, r.size, "SHA-1", null);
       if (!hash.equals(r.sha1))
-        throw new IOException("Debug build mismatch: " + r.path);
-      progress.update("Verify debug build", ++done, total);
+        throw new IOException(releaseTitle(release) + " mismatch: " + r.path);
+      progress.update(DEBUG.equals(release) ? "Verify debug build" : "Verify " + releaseTitle(release), ++done, total);
     }
+    validated = total;
+  }
+  /** "Debug build", "European release", "US release", "Japanese release" or "Korean translation". */
+  public static String releaseTitle(String release) {
+    return EUROPEAN.equals(release) ? "European release" : US.equals(release) ? "US release"
+        : JAPANESE.equals(release) ? "Japanese release" : KOREAN.equals(release) ? "Korean translation" : "Debug build";
+  }
+  /** The game id a release's discs carry (G4BE08 for the debug build and the US release). */
+  public static String gameId(String release) {
+    return EUROPEAN.equals(release) ? "G4BP08" : JAPANESE.equals(release) || KOREAN.equals(release) ? "G4BJ08" : "G4BE08";
+  }
+  /** The size of a release's sys/main.dol. */
+  public static long dolSize(String release) {
+    return EUROPEAN.equals(release) ? 2187552 : US.equals(release) ? 2168544
+        : JAPANESE.equals(release) || KOREAN.equals(release) ? 2182944 : 2554432;
+  }
+  /**
+   * The app's catalog `name` of a release: rooms.tsv for the debug build, rooms-eu.tsv for the European,
+   * rooms-us.tsv for the US release, rooms-jp.tsv / rooms-kr.tsv for the Japanese release and the Korean
+   * translation.
+   */
+  public static String catalog(String name, String release) {
+    return EUROPEAN.equals(release) ? name + "-eu.tsv" : US.equals(release) ? name + "-us.tsv"
+        : JAPANESE.equals(release) ? name + "-jp.tsv" : KOREAN.equals(release) ? name + "-kr.tsv" : name + ".tsv";
   }
   public long extractionSize() {
     long n = 0x440 + fstSize;  // sys/boot.bin, sys/fst.bin
@@ -217,22 +283,34 @@ public final class GameCubeDisc implements Closeable {
           throw new IOException("Unsafe destination path");
         if (!f.getParentFile().isDirectory() && !f.getParentFile().mkdirs())
           throw new IOException("Could not create directory");
-        MessageDigest md = newDigest("SHA-256");
-        input.seek(e.offset);
-        long remaining = e.size;
-        try (FileOutputStream w = new FileOutputStream(f)) {
-          while (remaining > 0) {
-            int n = (int)Math.min(buffer.length, remaining);
-            input.readFully(buffer, 0, n);
-            w.write(buffer, 0, n);
-            md.update(buffer, 0, n);
-            remaining -= n;
-            done += n;
-            progress.update("Disc " + discNumber + ": Extracting", done, total);
+        String hash = null;
+        // read back what the device stored: a file the storage did not keep is written once more,
+        // then the import stops (St2/r222.das read as zeros on three phones, 25./26.10.2026)
+        for (int attempt = 0; attempt < 2 && hash == null; attempt++) {
+          MessageDigest md = newDigest("SHA-256");
+          input.seek(e.offset);
+          long remaining = e.size;
+          try (FileOutputStream w = new FileOutputStream(f)) {
+            while (remaining > 0) {
+              int n = (int)Math.min(buffer.length, remaining);
+              input.readFully(buffer, 0, n);
+              w.write(buffer, 0, n);
+              md.update(buffer, 0, n);
+              remaining -= n;
+              if (attempt == 0) done += n;
+              progress.update("Disc " + discNumber + ": Extracting", done, total);
+            }
+            w.getFD().sync();
           }
-          w.getFD().sync();
+          String wrote = hex(md.digest());
+          if (wrote.equals(stored(f, e.size, buffer)))
+            hash = wrote;
         }
-        manifest.write(hex(md.digest()) + "\t" + e.size + "\t" + e.path + "\n");
+        if (hash == null)
+          throw new IOException("This device did not store " + e.path.replaceFirst("^files/", "")
+              + " correctly (it reads back differently than it was written). Free some storage, restart"
+              + " the phone and import Disc " + discNumber + " again; if it happens again, send the error report.");
+        manifest.write(hash + "\t" + e.size + "\t" + e.path + "\n");
       }
       // The disc header and the file system table, as Dolphin's "Extract
       // Entire Disc" writes them: the original game core (core mode) mounts
@@ -242,8 +320,8 @@ public final class GameCubeDisc implements Closeable {
     }
     try (FileOutputStream w =
              new FileOutputStream(new File(destination, "ready.properties"))) {
-      w.write(("format=1\nlanguage=eng\ndisc=" + discNumber + "\nid=G4BE08\nreferences=" +
-               (discNumber == 1 ? 111 : 5) + "\n")
+      w.write(("format=1\nlanguage=eng\ndisc=" + discNumber + "\nid=" + gameId(release)
+               + "\nrelease=" + release + "\nreferences=" + validated + "\n")
                   .getBytes(StandardCharsets.UTF_8));
       w.getFD().sync();
     }
@@ -261,6 +339,21 @@ public final class GameCubeDisc implements Closeable {
     MessageDigest md = newDigest("SHA-256");
     md.update(bytes);
     manifest.write(hex(md.digest()) + "\t" + size + "\t" + path + "\n");
+  }
+  /** The SHA-256 of the file as the device returns it, or null when it is not `size` bytes long. */
+  private static String stored(File f, long size, byte[] buffer) throws IOException {
+    if (f.length() != size)
+      return null;
+    MessageDigest md = newDigest("SHA-256");
+    long n = 0;
+    try (InputStream in = new FileInputStream(f)) {
+      int k;
+      while ((k = in.read(buffer)) >= 0) {
+        md.update(buffer, 0, k);
+        n += k;
+      }
+    }
+    return n == size ? hex(md.digest()) : null;
   }
   private String digest(long offset, long size, String algorithm,
                         Progress progress) throws IOException {

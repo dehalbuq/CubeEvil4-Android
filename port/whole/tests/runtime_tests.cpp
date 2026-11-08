@@ -23,6 +23,7 @@
 //          through PADRead, and the coverage log of GetDataExt (patch 0025)
 //   tasks  the game's own task scheduler (scheduler.cpp: TaskExec, TaskSleep,
 //          TaskExit, iTaskExec) on the OS thread emulation, plus VI retraces
+#include "re4_cpu_info.h"
 #include "re4_gx_frame.h"
 #include "re4_runtime.h"
 #include "re4_ppc.h"
@@ -36,6 +37,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <thread>
@@ -157,6 +159,18 @@ static void testLink()
     CHECK(dtors == 1);
     CHECK(*(unsigned*) (unsigned long) (RE4_MEM1_BASE + 0x30C8) == 0);
     CHECK(OSUnlink(rel) == 0);  // not linked any more
+    CHECK(OSLink(rel, bss) == 1);
+    CHECK(re4_module_load("re4test_rel") == handle);
+    CHECK(state() == 108);
+    CHECK(OSUnlink(rel) == 1);
+    // A relink is told by the header alone, however many other headers were
+    // linked in between (a list of 64 forgot the room REL after a long session).
+    for (int k = 0; k < 80; k++) {
+        unsigned char* copy = rel + 0x3000 + k * 0x60;
+        memcpy(copy, rel, sizeof(TestModuleHeader));
+        CHECK(OSLink(copy, 0) == 1);
+        CHECK(OSUnlink(copy) == 1);
+    }
     CHECK(OSLink(rel, bss) == 1);
     CHECK(re4_module_load("re4test_rel") == handle);
     CHECK(state() == 108);
@@ -383,6 +397,159 @@ static void testDvd()
     std::string cmd = "rm -rf '" + base + "'";
     CHECK(system(cmd.c_str()) == 0);
     report("dvd", ok);
+}
+
+// The release from each disc header (port/docs/retail-eu-plan.md): debug build, European and US
+// release, a header without the table's place (the test above), another game.
+extern "C" void re4_core_debug_menu(void);    // runtime/core_api.cpp
+extern "C" int re4_debug_menu_request(void);
+
+static void testDiscRelease()
+{
+    bool ok = true;
+    char tmpl[] = "/tmp/re4-release-test-XXXXXX";
+    const char* root = mkdtemp(tmpl);
+    CHECK(root != 0);
+    if (!root) {
+        report("disc release", false);
+        return;
+    }
+    std::string base = root;
+    std::vector<unsigned char> fst = buildFst({{false, "a.dat", 0x1000, 1}});
+    char saved[1024];
+    snprintf(saved, sizeof(saved), "%s", re4_data_dir());
+    struct Case {
+        const char* id;
+        unsigned fstOffset;
+        unsigned size;
+        int release;
+    } cases[] = {
+        {"G4BE08", 0x28FE00, 0x440, RE4_DISC_DEBUG},  {"G4BP08", 0x236500, 0x440, RE4_DISC_RETAIL_EU},
+        {"G4BE08", 0x231A00, 0x440, RE4_DISC_RETAIL_US}, {"G4BE08", 0, 0x40, RE4_DISC_DEBUG},
+        {"GXXE01", 0x28FE00, 0x440, RE4_DISC_UNKNOWN},   {"G4BJ08", 0x235300, 0x440, RE4_DISC_RETAIL_JP},
+        {"G4BJ08", 0x235300, 0x440, RE4_DISC_RETAIL_JP},
+    };
+    int n = 0;
+    for (const Case& c : cases) {
+        std::string dir = base + "/case" + std::to_string(n++);
+        unsigned char boot[0x440];
+        memset(boot, 0, sizeof(boot));
+        memcpy(boot, c.id, 6);
+        if (c.size >= 0x428) {
+            boot[0x424] = (unsigned char) (c.fstOffset >> 24);
+            boot[0x425] = (unsigned char) (c.fstOffset >> 16);
+            boot[0x426] = (unsigned char) (c.fstOffset >> 8);
+            boot[0x427] = (unsigned char) c.fstOffset;
+        }
+        CHECK(makeDirs(dir + "/disc0/sys") && makeDirs(dir + "/disc0/files"));
+        CHECK(writeFile(dir + "/disc0/sys/fst.bin", fst.data(), fst.size()));
+        CHECK(writeFile(dir + "/disc0/sys/boot.bin", boot, c.size));
+        CHECK(writeFile(dir + "/disc0/files/a.dat", "A", 1));
+        // the last Japanese case: the Korean translation's main.dol (two instructions, retail-jp-plan.md)
+        const bool korean = &c == &cases[sizeof(cases) / sizeof(cases[0]) - 1];
+        if (korean) {
+            std::vector<unsigned char> dol(0x29cd8, 0);
+            const unsigned char li30[4] = {0x3B, 0xC0, 0x00, 0x01}, li31[4] = {0x3B, 0xE0, 0x00, 0x01};
+            memcpy(&dol[0x14b7c], li30, 4);
+            memcpy(&dol[0x29cd4], li31, 4);
+            CHECK(writeFile(dir + "/disc0/sys/main.dol", dol.data(), dol.size()));
+        }
+        re4_set_data_dir(dir.c_str());
+        CHECK(re4_disc_release() == c.release);
+        CHECK(re4_disc_retail_kr() == (korean ? 1 : 0));
+        CHECK(re4_disc_retail_us() == (c.release == RE4_DISC_RETAIL_US));
+        const bool retail = c.release == RE4_DISC_RETAIL_EU || c.release == RE4_DISC_RETAIL_US ||
+                            c.release == RE4_DISC_RETAIL_JP;
+        CHECK(re4_disc_retail() == (retail ? 1 : 0));
+        // the game sees the header's id, the debug build's for the European and Japanese discs (memory
+        // card files)
+        const bool asDebug = c.release == RE4_DISC_RETAIL_EU || c.release == RE4_DISC_RETAIL_JP;
+        CHECK(memcmp(DVDGetCurrentDiskID()->gameName, asDebug ? "G4BE" : c.id, 4) == 0);
+        // SELECT held (the app): the debug menu, none with the retail discs (R6)
+        re4_core_debug_menu();
+        CHECK(re4_debug_menu_request() == (retail ? 0 : 1));
+    }
+    re4_set_data_dir((base + "/none").c_str());
+    CHECK(re4_disc_release() == RE4_DISC_UNKNOWN);
+    re4_set_data_dir(saved);
+    std::string cmd = "rm -rf '" + base + "'";
+    CHECK(system(cmd.c_str()) == 0);
+    report("disc release", ok);
+}
+
+extern "C" int re4_formats_retail_order(void* data, unsigned size, const char* name);
+
+// A big-endian archive body (count, rel, 0, 0, offsets, tags) with entries 0x20 apart.
+static std::vector<unsigned char> retailBody(const std::vector<std::string>& tags)
+{
+    unsigned n = (unsigned) tags.size(), first = (0x10 + n * 8 + 0x1F) & ~0x1Fu;
+    std::vector<unsigned char> b(first + n * 0x20);
+    auto put = [&](unsigned at, unsigned v) {
+        b[at] = (unsigned char) (v >> 24);
+        b[at + 1] = (unsigned char) (v >> 16);
+        b[at + 2] = (unsigned char) (v >> 8);
+        b[at + 3] = (unsigned char) v;
+    };
+    put(0, n);
+    for (unsigned i = 0; i < n; i++) {
+        put(0x10 + i * 4, first + i * 0x20);
+        memcpy(&b[0x10 + n * 4 + i * 4], tags[i].c_str(), tags[i].size());
+    }
+    return b;
+}
+
+static unsigned bodyOffset(const std::vector<unsigned char>& b, unsigned i)
+{
+    const unsigned char* p = &b[0x10 + i * 4];
+    return (unsigned) p[0] << 24 | (unsigned) p[1] << 16 | (unsigned) p[2] << 8 | p[3];
+}
+
+static std::string bodyTag(const std::vector<unsigned char>& b, unsigned n, unsigned i)
+{
+    return std::string((const char*) &b[0x10 + n * 4 + i * 4]);
+}
+
+// The European archive order put back into the debug build's (formats.cpp retailOrder,
+// port/docs/retail-eu-plan.md R2): Ada's rifle and Krauser, a table already in the debug order and
+// one of another size left alone.
+static void testRetailOrder()
+{
+    bool ok = true;
+    std::vector<unsigned char> w = retailBody({"TPL", "BIN", "BIN", "BIN", "FCV"});
+    unsigned o[5];
+    for (unsigned i = 0; i < 5; i++) {
+        o[i] = bodyOffset(w, i);
+    }
+    CHECK(re4_formats_retail_order(w.data(), (unsigned) w.size(), "ss/cmn/ss_wep40.dat") == 1);
+    CHECK(bodyOffset(w, 0) == o[0] && bodyOffset(w, 1) == o[1] && bodyOffset(w, 2) == o[3] &&
+          bodyOffset(w, 3) == o[4] && bodyOffset(w, 4) == o[2]);
+    CHECK(bodyTag(w, 5, 2) == "BIN" && bodyTag(w, 5, 3) == "FCV" && bodyTag(w, 5, 4) == "BIN");
+    CHECK(re4_formats_retail_order(w.data(), (unsigned) w.size(), "ss/cmn/ss_wep40.dat") == 0);  // put back already
+    std::vector<unsigned char> d = retailBody({"TPL", "BIN", "BIN", "FCV"});  // the debug build's file
+    std::vector<unsigned char> d0 = d;
+    CHECK(re4_formats_retail_order(d.data(), (unsigned) d.size(), "ss/cmn/ss_wep40.dat") == 0 && d == d0);
+
+    std::vector<std::string> kt(146, "FCV");
+    const char* eu[] = {"BIN", "TPL", "BIN", "TPL", "BIN", "TPL", "BIN", "BIN", "BIN", "BIN", "BIN", "TPL", "TPL", "TPL"};
+    for (unsigned i = 0; i < 14; i++) {
+        kt[i] = eu[i];
+    }
+    std::vector<unsigned char> k = retailBody(kt);
+    unsigned ko[146];
+    for (unsigned i = 0; i < 146; i++) {
+        ko[i] = bodyOffset(k, i);
+    }
+    CHECK(re4_formats_retail_order(k.data(), (unsigned) k.size(), "em/pl0a.drs") == 1);
+    const unsigned from[8] = {6, 12, 7, 8, 9, 10, 11, 13};
+    const char* dbg[8] = {"BIN", "TPL", "BIN", "BIN", "BIN", "BIN", "TPL", "TPL"};
+    for (unsigned i = 0; i < 8; i++) {
+        CHECK(bodyOffset(k, 6 + i) == ko[from[i]] && bodyTag(k, 146, 6 + i) == dbg[i]);
+    }
+    CHECK(bodyOffset(k, 5) == ko[5] && bodyOffset(k, 14) == ko[14]);
+    std::vector<unsigned char> s = retailBody({"BIN", "TPL"});  // another archive: no rule
+    std::vector<unsigned char> s0 = s;
+    CHECK(re4_formats_retail_order(s.data(), (unsigned) s.size(), "em/pl00.drs") == 0 && s == s0);
+    report("retail order", ok);
 }
 
 // --- yz2 ----------------------------------------------------------------------
@@ -655,11 +822,25 @@ int dvdQueueMain()
     gTitleFrames = readFrames("ss/eng/title.dat");
     gPacedFrames = readFrames("hdr.dat");
     CHECK(gFastFrames == 1 && gTitleFrames == 1 && gPacedFrames >= 8 && gPacedFrames < 100);
+    // a part table of zeros (a damaged file of the device; patch 0113): read again, then the read ends
+    // with an error instead of walking past the table for ever
+    int zeroReq = DvdReadN("zero.dat", 0, 0, 0, 0, 0x8000 | 0x4, __FILE__, __LINE__);
+    int zeroResult = 0, zeroFrames = 0;
+    for (int frame = 1; zeroReq >= 0 && frame <= 100 && zeroResult == 0; frame++) {
+        Dvd.Watcher();
+        TaskScheduler();
+        iTaskScheduler();
+        zeroResult = Dvd.ReadCheck(zeroReq, &info);
+        zeroFrames = frame;
+    }
+    CHECK(zeroReq >= 0 && zeroResult < 0 && zeroFrames < 100);
     gQueueOk = ok;
     return 0;
 }
 
 }  // namespace
+
+extern "C" const char* re4_core_disc_problem(void);  // runtime/dvd.cpp
 
 static void testDvdQueue()
 {
@@ -691,13 +872,16 @@ static void testDvdQueue()
     }
     std::vector<FstEntry> fst = {{true, "ss", 0, 4}, {true, "eng", 1, 4},
                                  {false, "title.dat", 0x2000, (unsigned) file.size()},
-                                 {false, "hdr.dat", 0x1000, (unsigned) file.size()}};
+                                 {false, "hdr.dat", 0x1000, (unsigned) file.size()},
+                                 {false, "zero.dat", 0x3000, (unsigned) file.size()}};
     std::vector<unsigned char> f = buildFst(fst);
     unsigned char boot[0x40] = "G4BE08";
     CHECK(makeDirs(gQueueDir + "/disc0/sys") && makeDirs(gQueueDir + "/disc0/files"));
     CHECK(writeFile(gQueueDir + "/disc0/sys/fst.bin", f.data(), f.size()));
     CHECK(writeFile(gQueueDir + "/disc0/sys/boot.bin", boot, sizeof(boot)));
     CHECK(writeFile(gQueueDir + "/disc0/files/hdr.dat", file.data(), file.size()));
+    std::vector<unsigned char> zeros(file.size(), 0);
+    CHECK(writeFile(gQueueDir + "/disc0/files/zero.dat", zeros.data(), zeros.size()));
     CHECK(makeDirs(gQueueDir + "/disc0/files/ss/eng"));
     CHECK(writeFile(gQueueDir + "/disc0/files/ss/eng/title.dat", file.data(), file.size()));
     char saved[1024];
@@ -711,6 +895,10 @@ static void testDvdQueue()
         re4_log("  reads at the start: %d and %d frames (title.dat), after it: %d", gFastFrames, gTitleFrames,
                 gPacedFrames);
     }
+    // the app learns which file it was and why (re4_core_disc_problem, the in-game message)
+    const char* problem = re4_core_disc_problem();
+    re4_log("  disc problem for the app: %s", problem);
+    CHECK(strncmp(problem, "1\tzero.dat\t", 11) == 0 && strstr(problem, "zeros") != 0);
     report("dvdq", ok && gQueueOk);
 }
 
@@ -780,6 +968,7 @@ extern "C" int re4probe_gx_test(void* fifo, void* list);
 extern "C" int re4probe_gx_frame_test(void* fifo, void* mem);
 extern "C" void re4probe_gx_produce(void* fifo, void* xfb, int frames, int init);
 extern "C" unsigned long long re4probe_gx_fingerprint(void* fifo, void* mem, void* xfb, int frames);
+extern "C" int re4_gx_threads(int n);
 extern "C" unsigned re4probe_gx_bench(void* fifo, void* mem, void* xfb, int frames);
 
 // The SDK's GX library and the game's inline vertex functions feed the port's
@@ -863,13 +1052,22 @@ static void testGx()
     {
         void* mem = (void*) (unsigned long) 0x82900000u;
         void* xfb = (void*) (unsigned long) 0x82830000u;
+        // the vertices on 3 more threads (the vertex jobs, gx_decode.cpp), or as RE4_GX_THREADS
+        // says (0: on the core thread alone; whole_build.sh runs both): the same chunks byte for
+        // byte. Once per process: the decoder keeps state from one run to the next (texture keys,
+        // copy serials)
+        const char* threads = getenv("RE4_GX_THREADS");
+        const int workers = threads && *threads ? atoi(threads) : 3;
+        re4_gx_threads(workers);
         auto t0 = std::chrono::steady_clock::now();
         unsigned long long hash = re4probe_gx_fingerprint((void*) (unsigned long) 0x82800000u, mem, xfb, 24);
         double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
         if (hash != 0x02524012c6419af2ull || getenv("RE4_GX_FINGERPRINT_PARTS")) {
-            re4_log("  gx fingerprint: %016llx (expected 02524012c6419af2), %.0f ms", hash, ms);
+            re4_log("  gx fingerprint: %016llx (expected 02524012c6419af2), %.0f ms, %d vertex threads", hash, ms,
+                    workers);
         }
         CHECK(hash == 0x02524012c6419af2ull);
+        re4_gx_threads(-1);
     }
     // a marked chunk (re4_gx_mark: a hit on the player) starts over and carries the mark
     {
@@ -895,6 +1093,36 @@ static void testGx()
         CHECK((flags[2] & 0x100) && !(flags[2] & (RE4_GX_CHUNK_MARK | RE4_GX_CHUNK_RESET)));
         if (!(flags[0] & RE4_GX_CHUNK_MARK) || !(flags[1] & RE4_GX_CHUNK_RESET)) {
             re4_log("  gx mark: chunk flags %x %x %x", flags[0], flags[1], flags[2]);
+        }
+        re4_core_gx_detach();
+    }
+    // a menu screen of the game (re4_gx_still, runtime/picture.cpp): the chunks closed while it is
+    // open carry RE4_GX_CHUNK_STILL (the app's 60 FPS leaves out the pictures between them)
+    {
+        void* fifo = (void*) (unsigned long) 0x82800000u;
+        void* xfb = (void*) (unsigned long) 0x82830000u;
+        re4_core_gx_acquire();  // attach
+        re4probe_gx_produce(fifo, xfb, 2, 0);
+        while (const Re4GxChunk* c = re4_core_gx_acquire()) {
+            re4_core_gx_release(c);
+        }
+        // one frame at a time, taking what is queued after each (4 slots: a renderer that takes
+        // none for a second loses the queue)
+        unsigned still = 0, chunks = 0, last = 0;
+        for (int i = 0; i < 4; i++) {
+            re4_gx_still(i < 2);
+            re4probe_gx_produce(fifo, xfb, 1, 0);
+            while (const Re4GxChunk* c = re4_core_gx_acquire()) {
+                chunks++;
+                still += (c->flags & RE4_GX_CHUNK_STILL) ? 1 : 0;
+                last = c->flags;
+                re4_core_gx_release(c);
+            }
+        }
+        re4_gx_still(0);
+        CHECK(still == 2 && chunks >= 3 && !(last & RE4_GX_CHUNK_STILL));
+        if (still != 2 || chunks < 3 || (last & RE4_GX_CHUNK_STILL)) {
+            re4_log("  gx still: %u of %u chunks marked, the last 0x%x", still, chunks, last);
         }
         re4_core_gx_detach();
     }
@@ -954,6 +1182,28 @@ int re4probe_debug_mode(int set);
 void re4probe_stale_list(int set);
 int re4probe_light05(void);
 int re4probe_luis_damage(void);
+int re4probe_route_far(void);
+void re4probe_enemy_log(void);
+int re4probe_em_at_flags(void);
+void re4probe_death_log(void);
+int re4probe_arc(void);
+int re4probe_arc_table(void);
+int re4probe_partner_damage(void);
+int re4probe_case_free_place(void);
+int re4probe_menu_touch(void);
+int re4probe_letterbox(void);
+int re4probe_picture_still(void);
+int re4probe_knife_swipe(void);
+int re4probe_qte_touch(void);
+int re4probe_qte_auto(void);
+int re4probe_cheat_extras(void);
+int re4probe_potato(void);
+int re4probe_handcannon(void);
+int re4probe_gyro_boat(void);
+int re4probe_snd_bank(void);
+int re4probe_frame_sections(void);
+int re4probe_path_entry(void);
+int re4_log_tail(char* out, int size);
 }
 
 static unsigned bitsOf(float f)
@@ -1439,11 +1689,698 @@ static void testPartner()
     report("partner", ok);
 }
 
+// A Ganado looks for its way from or to a position far outside the room (route_ck getNearPoint,
+// patch 0088, game_probe.cpp): no route point instead of a read through stack garbage
+static void testRoute()
+{
+    bool ok = true;
+    int r = re4probe_route_far();
+    CHECK(r == 0);
+    if (r != 0) {
+        re4_log("  route: faults 0x%x (1 near point, 2 far mode 1, 4 far mode 0)", r);
+    }
+    report("route", ok);
+}
+
+// Patch 0115 (game_probe.cpp re4probe_em_at_flags): a Ganado in the air is pushed out of a door,
+// and every body keeps its whole collision flag (the 0.91.0 test: Leon walked through doors)
+static void testEmAtFlags()
+{
+    int r = re4probe_em_at_flags();
+    if (r != 0) {
+        re4_log("  em at flags: faults 0x%x (1/4/32 not pushed, 2/8/16 flag changed)", r);
+    }
+    report("em at flags", r == 0);
+}
+
+// The error log's enemy and menu lines (state_trace.cpp, game_probe.cpp re4probe_enemy_log): a
+// Ganado appears, is hit on the head, changes its routine, loses its head, is hidden, jumps, holds
+// back and follows again (tester report 22.10.2026) and goes, a weapon work flies as dynamite and explodes (no hit lines for it); the C stick moves a
+// sub screen's cursor
+static void testEnemyLog()
+{
+    bool ok = true;
+    re4probe_enemy_log();
+    static char tail[24 * 130];
+    re4_log_tail(tail, sizeof tail);
+    const char* want[] = {
+        "em: + s1 0x1a/3 list 5 set 0x24 f 0x00020000 hp 300 at (100 0 200) in r209",
+        "em: hit s1 0x1a/3 hp 300 -> 100 part 5 wep 0x10 r 2/4/0/0 flg 0x00004000",
+        "em: s1 r 2/9/0/0",
+        "em: + s0 0x42/0 list 0 set 0x00 f 0x00000000 hp 0 at (0 0 0) in r209",
+        "em: s0 dynamite thrown by s1 at (120 1500 210)",
+        "em: s1 head lost",
+        "em: s0 dynamite exploded at (900 0 210)",
+        "em: s1 hidden",
+        "em: s1 jumps (100 0 200) -> (5000 0 200)",
+        "em: s1 at the dynamite post (list 5)",
+        "em: s1 lights a dynamite stick (1 so far)",
+        "em: s1 stays back (Stay): 6.0 m from Leon, 7.5 m on the route, 0 Ganados nearer",
+        "em: s1 follows again after 4.0 s (r 1/16)",
+        "em: - s1 0x1a/3 hp 100 r 1/16/0/0 at (5000 0 200) after 130 frames",
+        "pad: menu frame 1008 rep 0x00100000 stick (0 0) c (12 0)",
+    };
+    for (const char* w : want) {
+        if (!strstr(tail, w)) {
+            ok = false;
+            re4_log("  enemylog: missing \"%s\"", w);
+        }
+    }
+    if (strstr(tail, "em: hit s0")) {
+        ok = false;
+        re4_log("  enemylog: a hit line for the dynamite");
+    }
+    report("enemylog", ok);
+}
+
+// Leon's side of a death in the error log (state_trace.cpp playerLog, game_probe.cpp
+// re4probe_death_log): the room starts running, the death demo with the scene areas hit,
+// Leon's position not a number, the continue; an enemy at NaN (tester report 22.10.2026, r21d)
+static void testDeathLog()
+{
+    bool ok = true;
+    re4probe_death_log();
+    static char tail[24 * 160];
+    re4_log_tail(tail, sizeof tail);
+    const char* want[] = {
+        "room: r21d runs (frame 2001), Leon at (100 0 200) facing 0.50, life 1200/1200, weapon 0x02",
+        "die: r21d after 2 frames, life 1200, Leon at (100 0 200); scene areas hit: 0x05 0x13",
+        "die: area 0x05 id 0 on 1 trg 1: floor 0 height 2000, (0 0) (1000 0) (1000 1000) (0 1000), for 1",
+        "pl: Leon's position is not a number in r21d (frame 2004, 3 frames after the room started)",
+        "room: r21d runs (frame 2006), Leon at (100 0 200) facing 0.50, life 1200/1200, weapon 0x02, game_mode 0, game_country 0, continue after a death",
+        "em: + s1 0x2d/0 list 0 set 0x00 f 0x00000000 hp 100 at (0 0 0) in r21d",
+        "em: s1 position is not a number, last at (0 0 0)",
+    };
+    // (the tail keeps 119 characters of a line, log.cpp kTailWidth: the room line with game_mode and
+    // game_country is longer, its end is compared no further)
+    for (const char* w : want) {
+        const std::string kept(w, std::min<size_t>(strlen(w), 119));
+        if (!strstr(tail, kept.c_str())) {
+            ok = false;
+            re4_log("  deathlog: missing \"%s\"", w);
+        }
+    }
+    report("deathlog", ok);
+}
+
+// The insects' wall step with the port's vector functions stays a number (re4_acosf, game_probe.cpp
+// re4probe_arc: the bits name what failed)
+static void testArc()
+{
+    int bad = re4probe_arc();
+    if (bad) {
+        re4_log("  arc: failed checks 0x%x", bad);
+    }
+    report("arc", bad == 0);
+}
+
+// An archive index past the table reads its word as the GameCube does (patch 0134, game_probe.cpp
+// re4probe_arc_table: the bits name what failed), and the log names it
+static void testArcTable()
+{
+    bool ok = true;
+    int bad = re4probe_arc_table();
+    if (bad) {
+        re4_log("  arctable: failed checks 0x%x", bad);
+        ok = false;
+    }
+    static char tail[24 * 160];
+    re4_log_tail(tail, sizeof tail);
+    if (!strstr(tail, "(2 entries) read at index 0x6, past its table: word 0x46435600 as on the GameCube")) {
+        re4_log("  arctable: the log line is missing");
+        ok = false;
+    }
+    report("arctable", ok);
+}
+
+// The subtitle table of a movie header (patch 0136, runtime/movie_status.cpp): a pack, then the
+// private stream 0xBF with the tags as the European opening.sfd has them; one entry on channel 3,
+// none on channel 2 (English), none in a header without the table
+extern "C" int re4_movie_subtitles(const void* head, int size, int channel);
+
+static int putTag(unsigned char* b, int at, const char* name, const char* value, int len)
+{
+    memset(b + at, 0, 8);
+    memcpy(b + at, name, strlen(name));
+    snprintf((char*) b + at + 8, 8, "%07x", len);
+    if (value) {
+        memcpy(b + at + 16, value, len);
+    }
+    return at + 16 + (value ? len : 0);
+}
+
+static void testMovieSubtitles()
+{
+    static unsigned char head[0x400];
+    unsigned char t[0x200];
+    memset(head, 0, sizeof head);
+    memset(t, 0, sizeof t);
+    // tags from the inside out: TIMEDAT, CHDAT, USRINFS, CRITAGS
+    unsigned char td[0x60];
+    int n = putTag(td, 0, "INTIME", "1000\0", 5);
+    n = putTag(td, n, "DURTIME", "500\0", 4);
+    n = putTag(td, n, "CONTENT", "7\0", 2);
+    unsigned char ch[0x100];
+    int c = putTag(ch, 0, "CHNO", "3\0", 2);
+    c = putTag(ch, c, "TUNIT", "29970\0", 6);
+    c = putTag(ch, c, "TIMEDAT", 0, n);
+    memcpy(ch + c, td, n);
+    c += n;
+    unsigned char ui[0x180];
+    int u = putTag(ui, 0, "TYPE", "SUBTITLE\0", 9);
+    u = putTag(ui, u, "CHDAT", 0, c);
+    memcpy(ui + u, ch, c);
+    u += c;
+    int k = putTag(t, 0, "CRITAGS", 0, u + 16);
+    k = putTag(t, k, "USRINFS", 0, u);
+    memcpy(t + k, ui, u);
+    k += u;
+    k = putTag(t, k, "CRITAGE", "", 0);
+    // MPEG-1 pack (12 bytes), then the PES packet of stream 0xBF
+    const unsigned char pack[12] = {0, 0, 1, 0xBA, 0x21, 0, 1, 0, 1, 0x80, 0, 1};
+    memcpy(head, pack, 12);
+    head[12] = 0;
+    head[13] = 0;
+    head[14] = 1;
+    head[15] = 0xBF;
+    head[16] = (unsigned char) (k >> 8);
+    head[17] = (unsigned char) k;
+    memcpy(head + 18, t, k);
+    bool ok = re4_movie_subtitles(head, sizeof head, 3) == 1 && re4_movie_subtitles(head, sizeof head, 2) == 0;
+    head[15] = 0xBE;  // the same bytes as padding: no table
+    ok = ok && re4_movie_subtitles(head, sizeof head, 3) == 0;
+    report("moviesubtitles", ok);
+}
+
+// Ashley's damage handler on the bulldozer gets Ashley (patch 0098, game_probe.cpp)
+static void testPartnerDamage()
+{
+    report("partnerdmg", re4probe_partner_damage() == 0);
+}
+
+// Items without a place in the case get the first free one (patch 0100, game_probe.cpp): the moves
+// in the log, the places in the items
+static void testCaseFreePlace()
+{
+    bool ok = true;
+    int bad = re4probe_case_free_place();
+    if (bad) {
+        re4_log("  casefree: failed checks 0x%x", bad);
+        ok = false;
+    }
+    static char tail[24 * 160];
+    re4_log_tail(tail, sizeof tail);
+    const char* want[] = {
+        "case: item 0x2a had no place at (2 1) turn 0 in the case; moved to (11 1) turn 0 in the case",
+        "case: item 0x04 had no place at (40 2) turn 0 in the case; moved to (17 0) turn 0 in the case",
+    };
+    for (const char* w : want) {
+        if (!strstr(tail, w)) {
+            ok = false;
+            re4_log("  casefree: missing \"%s\"", w);
+        }
+    }
+    report("casefree", ok);
+}
+
+// Taps in the attache case (runtime/menu_touch.cpp, patch 0106; game_probe.cpp
+// re4probe_menu_touch): cursor, A on the piece under it, the command menu, its question
+static void testMenuTouch()
+{
+    bool ok = true;
+    int bad = re4probe_menu_touch();
+    if (bad) {
+        re4_log("  menutouch: failed checks 0x%x", bad);
+        ok = false;
+    }
+    static char tail[64 * 160];
+    re4_log_tail(tail, sizeof tail);
+    const char* want[] = {
+        "touch: case: cursor to (", ") in the case, item 0x05",
+        "touch: case: A on item 0x05 at (",
+        "touch: case: cursor to (0 5) in the case, item 0x00",
+        "touch: command 1 of 3: A",
+        "touch: command menu closed (a tap beside it)",
+        "touch: question option 0: A",
+        "touch: tab 2 (swipe to the next)",
+        "touch: tab 1 (swipe to the one before)",
+        "touch: tab 3 (swipe to the next)",
+        "touch: tab 0 (swipe to the one before)",
+        "touch: swipe to the one before: no tab there",
+        "touch: swipe kept until the screen shows",
+    };
+    for (const char* w : want) {
+        if (!strstr(tail, w)) {
+            ok = false;
+            re4_log("  menutouch: missing \"%s\"", w);
+        }
+    }
+    report("menutouch", ok);
+}
+
+// The picture format "4:3 without bars" (patch 0105): when the letterbox stays away; and the menu
+// screens without in-between pictures (runtime/picture.cpp re4_picture_still)
+static void testLetterbox()
+{
+    const int bad = re4probe_letterbox() | re4probe_picture_still() << 8;
+    if (bad) {
+        re4_log("  letterbox: failed checks 0x%x", bad);
+    }
+    // the changes in the error log (runtime/picture.cpp)
+    static char tail[24 * 160];
+    re4_log_tail(tail, sizeof tail);
+    const bool logged = strstr(tail, "picture: the game draws without its letterbox (r") &&
+                        strstr(tail, "picture: the game draws with its letterbox (r");
+    if (!logged) {
+        re4_log("  letterbox: the changes are not in the log");
+    }
+    report("letterbox", bad == 0 && logged);
+}
+
+// The sound driver's request bank (patch 0107; game_probe.cpp re4probe_snd_bank): 256 slots, the
+// count before an audio frame (state_trace.cpp)
+static void testSndBank()
+{
+    const int bad = re4probe_snd_bank();
+    if (bad) {
+        re4_log("  sndbank: failed checks 0x%x", bad);
+    }
+    report("sndbank", bad == 0);
+}
+
+// The sections of a frame (patch 0108; state_trace.cpp, game_probe.cpp re4probe_frame_sections):
+// one line after 600 frames in a room, with the averages
+static void testFrameSections()
+{
+    re4probe_frame_sections();
+    static char tail[16 * 160];
+    re4_log_tail(tail, sizeof tail);
+    // (the tail keeps 120 characters of a line)
+    const bool ok = strstr(tail, "frame: 600 frames in r105: logic 2.0 ms, drawing 5.0 ms, rest 3.0 ms, frame end "
+                                 "1.0 ms, waiting 21.3 ms") != 0;
+    if (!ok) {
+        re4_log("  sections: the line is not in the log");
+    }
+    report("sections", ok);
+}
+
+// The jet ski's rail of r333 (PTH, formats_eff.cpp convertPathEntry; game_probe.cpp
+// re4probe_path_entry): converted, the game's path functions read its length and points right
+static void testPathEntry()
+{
+    const int bad = re4probe_path_entry();
+    if (bad) {
+        re4_log("  path entry: faults 0x%x", bad);
+    }
+    report("pathentry", bad == 0);
+}
+
+// The knife by a swipe (runtime/knife_swipe.cpp; game_probe.cpp re4probe_knife_swipe): L until the
+// knife is out, L and A until it slashes, the swipe's tilt on the aim, a second swipe, the stops
+static void testKnifeSwipe()
+{
+    bool ok = true;
+    const int bad = re4probe_knife_swipe();
+    if (bad) {
+        re4_log("  knifeswipe: failed checks 0x%x", bad);
+        ok = false;
+    }
+    static char tail[48 * 160];
+    re4_log_tail(tail, sizeof tail);
+    const char* want[] = {
+        "knife: swipe ignored (a sub screen is open)",
+        "knife: slash 1 by a swipe (tilt -1.00)",
+        "knife: slash 2 by a swipe (tilt +0.20)",
+        "knife: swipe slash stopped (the player left the knife)",
+        "knife: swipe ignored (the player is busy)",
+        "knife: swipe ignored (this character has no knife on L)",
+        "knife: swipe slash stopped (the knife did not come out)",
+    };
+    for (const char* w : want) {
+        if (!strstr(tail, w)) {
+            ok = false;
+            re4_log("  knifeswipe: missing \"%s\"", w);
+        }
+    }
+    report("knifeswipe", ok);
+}
+
+// Quick-time events by a tap (runtime/qte_touch.cpp; game_probe.cpp re4probe_qte_touch): the
+// prompt's buttons for two frames, nothing for doors, in sub screens or without a prompt; the log line
+static void testQteTouch()
+{
+    const int bad = re4probe_qte_touch();
+    static char tail[48 * 160];
+    re4_log_tail(tail, sizeof tail);
+    const bool logged = strstr(tail, "qte: a tap pressed L+R for the prompt (kind 3)") != nullptr;
+    if (bad || !logged) {
+        re4_log("  qtetouch: failed checks 0x%x%s", bad, logged ? "" : ", no log line");
+    }
+    report("qtetouch", bad == 0 && logged);
+}
+
+// Automatic QTEs, the cheat switch (runtime/qte_touch.cpp re4_qte_auto; game_probe.cpp
+// re4probe_qte_auto): the prompt's buttons by themselves, not the player's own prompts
+static void testQteAuto()
+{
+    const int bad = re4probe_qte_auto();
+    static char tail[48 * 160];
+    re4_log_tail(tail, sizeof tail);
+    const bool logged = strstr(tail, "qte: automatic, L+R pressed for the prompt (kind 3)") != nullptr;
+    if (bad || !logged) {
+        re4_log("  qteauto: failed checks 0x%x%s", bad, logged ? "" : ", no log line");
+    }
+    report("qteauto", bad == 0 && logged);
+}
+
+// The cheat button "unlock the extra games" (runtime/cheats.cpp; game_probe.cpp re4probe_cheat_extras)
+static void testCheatExtras()
+{
+    const int bad = re4probe_cheat_extras();
+    if (bad) {
+        re4_log("  cheatextras: failed checks 0x%x", bad);
+    }
+    report("cheatextras", bad == 0);
+}
+
+// The handcannon's firepower and endless ammo (patch 0146; game_probe.cpp re4probe_handcannon)
+static void testHandcannon()
+{
+    const int bad = re4probe_handcannon();
+    if (bad) {
+        re4_log("  handcannon: failed checks 0x%x", bad);
+    }
+    report("handcannon", bad == 0);
+}
+
+// The app menu's Potato mode (runtime/potato.cpp, patch 0149; game_probe.cpp re4probe_potato)
+static void testPotato()
+{
+    const int bad = re4probe_potato();
+    if (bad) {
+        re4_log("  potato: failed checks 0x%x", bad);
+    }
+    report("potato", bad == 0);
+}
+
+// Gyro aiming with the harpoon in the boat (runtime/gyro.cpp; game_probe.cpp re4probe_gyro_boat):
+// the sight across and up, the boat turning at the sight's limit, not before the aim, the log line
+static void testGyroBoat()
+{
+    const int bad = re4probe_gyro_boat();
+    static char tail[48 * 160];
+    re4_log_tail(tail, sizeof tail);
+    const bool logged = strstr(tail, "gyro: the harpoon's sight moved by the gyroscope") != nullptr;
+    if (bad || !logged) {
+        re4_log("  gyroboat: failed checks 0x%x%s", bad, logged ? "" : ", no log line");
+    }
+    report("gyroboat", bad == 0 && logged);
+}
+
+// The processor lines of the performance log (re4_cpu_info.h): the layout of a phone with two kinds
+// of cores and of one with three, and a thread's processor time per picture (it computes here)
+static void testCpuInfo()
+{
+    bool ok = true;
+    char text[256];
+    re4cpu::Layout a30;  // Galaxy A30s: six slow, two fast cores
+    a30.count = 8;
+    for (int i = 0; i < 8; i++) {
+        a30.maxKHz[i] = i < 6 ? 1586000 : 1794000;
+    }
+    a30.slowest = 1586000;
+    a30.fastest = 1794000;
+    a30.Describe(text, sizeof(text));
+    ok &= strcmp(text, "8 cores: 0-5 at most 1586 MHz, 6-7 at most 1794 MHz") == 0;
+    ok &= a30.Kind(0) == 0 && a30.Kind(7) == 2;
+    re4cpu::Layout sd;  // Snapdragon 865 (Retroid): four slow, three middle, one fast
+    sd.count = 8;
+    for (int i = 0; i < 8; i++) {
+        sd.maxKHz[i] = i < 4 ? 1804800 : i < 7 ? 2419200 : 2841600;
+    }
+    sd.slowest = 1804800;
+    sd.fastest = 2841600;
+    ok &= sd.Kind(3) == 0 && sd.Kind(5) == 1 && sd.Kind(7) == 2;
+    re4cpu::Layout alike;  // clocks not readable: every core counts as fast
+    alike.count = 4;
+    ok &= alike.Kind(1) == 2;
+    alike.Describe(text, sizeof(text));
+    ok &= strcmp(text, "4 cores, clocks not readable") == 0;
+    re4cpu::ThreadUse use;
+    use.Picture();
+    volatile double x = 0;
+    for (int i = 0; i < 2000000; i++) {
+        x = x + i * 0.5;
+    }
+    use.Picture();
+    ok &= use.pictures == 1 && use.cpuNs > 0;
+    use.Describe(text, sizeof(text));
+    ok &= strstr(text, "ms of processor time each") != nullptr && use.pictures == 0;
+    // off the slowest cores (KeepOffSlowCores): alike cores and RE4_FAST_CORES=0 leave the thread;
+    // this machine's cores, the lower half made slow, on a thread of its own: it may then use the
+    // upper half only
+    ok &= !re4cpu::KeepOffSlowCores(alike, text, sizeof(text)) && strstr(text, "clocks not readable");
+    setenv("RE4_FAST_CORES", "0", 1);
+    ok &= !re4cpu::KeepOffSlowCores(a30, text, sizeof(text)) && strstr(text, "RE4_FAST_CORES=0");
+    unsetenv("RE4_FAST_CORES");
+    const int cores = (int) sysconf(_SC_NPROCESSORS_ONLN);
+    if (cores >= 2 && cores <= re4cpu::Layout::kMax) {
+        re4cpu::Layout half;
+        half.count = cores;
+        for (int i = 0; i < cores; i++) {
+            half.maxKHz[i] = i < cores / 2 ? 1000000 : 2000000;
+        }
+        half.slowest = 1000000;
+        half.fastest = 2000000;
+        bool placed = false, upper = true;
+        char where[160] = "";
+        std::thread([&] {
+            cpu_set_t before;
+            CPU_ZERO(&before);
+            sched_getaffinity(0, sizeof(before), &before);
+            bool all = true;  // a test machine that gives this process every core
+            for (int i = 0; i < cores; i++) {
+                all &= CPU_ISSET(i, &before) != 0;
+            }
+            if (!all) {
+                placed = upper = true;
+                snprintf(where, sizeof(where), "(not every core given to the test)");
+                return;
+            }
+            placed = re4cpu::KeepOffSlowCores(half, where, sizeof(where));
+            cpu_set_t now;
+            CPU_ZERO(&now);
+            sched_getaffinity(0, sizeof(now), &now);
+            for (int i = 0; i < cores; i++) {
+                upper &= (CPU_ISSET(i, &now) != 0) == (i >= cores / 2);
+            }
+        }).join();
+        ok &= placed && upper;
+        if (!placed || !upper) {
+            re4_log("  cpuinfo: placement %s", where);
+        }
+    }
+    // three kinds (the Retroid's Snapdragon 865): the render thread on the fastest kind alone, the game thread on
+    // the middle kind (06.11.2026); two kinds (A30s) or RE4_PRIME_CORE=0: no prime core
+    ok &= re4cpu::HasPrimeCores(sd) && !re4cpu::HasPrimeCores(a30) && !re4cpu::HasPrimeCores(alike);
+    // the render thread's cores now (FastestCoresNow): with the clocks a machine allows not readable, the fastest
+    // kind of the layout (the Snapdragon 865's core 7); the clocks line names the cores off the slowest kind
+    if (re4cpu::AllowedKHz(7) == 0 && re4cpu::CoreOnline(4) && re4cpu::CoreOnline(7)) {
+        cpu_set_t best;
+        ok &= re4cpu::FastestCoresNow(sd, &best) && CPU_COUNT(&best) == 1 && CPU_ISSET(7, &best);
+    }
+    re4cpu::DescribeClocks(sd, text, sizeof(text));
+    ok &= strstr(text, "cores now:") == text && strstr(text, " 4 ") != nullptr && strstr(text, " 3 ") == nullptr;
+    setenv("RE4_PRIME_CORE", "0", 1);
+    ok &= !re4cpu::HasPrimeCores(sd);
+    unsetenv("RE4_PRIME_CORE");
+    if (cores >= 4 && cores <= re4cpu::Layout::kMax) {
+        // this machine's cores: the lower half slow, the top one fastest, the rest middle
+        re4cpu::Layout three;
+        three.count = cores;
+        for (int i = 0; i < cores; i++) {
+            three.maxKHz[i] = i < cores / 2 ? 1000000 : i < cores - 1 ? 2000000 : 3000000;
+        }
+        three.slowest = 1000000;
+        three.fastest = 3000000;
+        bool render = true, game = true, given = true;
+        char where[2][200] = {"", ""};
+        for (int role = 1; role <= 2; role++) {
+            std::thread([&] {
+                cpu_set_t before;
+                CPU_ZERO(&before);
+                sched_getaffinity(0, sizeof(before), &before);
+                for (int i = 0; i < cores; i++) {
+                    given &= CPU_ISSET(i, &before) != 0;
+                }
+                if (!given) {
+                    return;
+                }
+                const bool placed = re4cpu::KeepOffSlowCores(three, where[role - 1], sizeof(where[0]), role);
+                cpu_set_t now;
+                CPU_ZERO(&now);
+                sched_getaffinity(0, sizeof(now), &now);
+                for (int i = 0; i < cores; i++) {
+                    const bool on = CPU_ISSET(i, &now) != 0;
+                    if (role == re4cpu::kRenderThread) {
+                        render &= placed && on == (i == cores - 1);
+                    } else {
+                        game &= placed && on == (i >= cores / 2 && i < cores - 1);
+                    }
+                }
+            }).join();
+        }
+        ok &= !given || (render && game);
+        if (given && (!render || !game)) {
+            re4_log("  cpuinfo: render thread %s; game thread %s", where[0], where[1]);
+        }
+    }
+    // the helpers on the slow cores (PutOnSlowCores) only with two faster cores or fewer: the A30s
+    // (two) yes, the Retroid (four) and alike cores no; a helper thread of this machine, the cores
+    // above the lowest two made slow, lands below them; RE4_HELPERS_SLOW=0 leaves it
+    ok &= re4cpu::FasterCores(a30) == 2 && re4cpu::FasterCores(sd) == 4 && re4cpu::FasterCores(alike) == 0;
+    ok &= !re4cpu::PutOnSlowCores(sd, re4cpu::ThreadId(), nullptr, text, sizeof(text)) &&
+          strstr(text, "4 faster cores") != nullptr;
+    ok &= !re4cpu::PutOnSlowCores(alike, re4cpu::ThreadId(), nullptr, text, sizeof(text)) &&
+          strstr(text, "clocks not readable") != nullptr;
+    setenv("RE4_HELPERS_SLOW", "0", 1);
+    ok &= !re4cpu::PutOnSlowCores(a30, re4cpu::ThreadId(), nullptr, text, sizeof(text)) &&
+          strstr(text, "RE4_HELPERS_SLOW=0") != nullptr;
+    unsetenv("RE4_HELPERS_SLOW");
+    if (cores >= 3 && cores <= re4cpu::Layout::kMax) {
+        re4cpu::Layout two;  // the two highest cores fast
+        two.count = cores;
+        for (int i = 0; i < cores; i++) {
+            two.maxKHz[i] = i < cores - 2 ? 1000000 : 2000000;
+        }
+        two.slowest = 1000000;
+        two.fastest = 2000000;
+        std::atomic<int> helperTid(0);
+        std::atomic<bool> placedDone(false);
+        bool placed = false, lower = true;
+        char where[160] = "";
+        std::thread helper([&] {
+            helperTid = re4cpu::ThreadId();
+            while (!placedDone.load()) {
+                std::this_thread::yield();
+            }
+        });
+        while (!helperTid.load()) {
+            std::this_thread::yield();
+        }
+        cpu_set_t before, set, now;
+        CPU_ZERO(&before);
+        sched_getaffinity(helperTid, sizeof(before), &before);
+        bool all = true;
+        for (int i = 0; i < cores; i++) {
+            all &= CPU_ISSET(i, &before) != 0;
+        }
+        if (all) {
+            placed = re4cpu::PutOnSlowCores(two, helperTid, &set, where, sizeof(where));
+            CPU_ZERO(&now);
+            sched_getaffinity(helperTid, sizeof(now), &now);
+            for (int i = 0; i < cores; i++) {
+                lower &= (CPU_ISSET(i, &now) != 0) == (i < cores - 2);
+            }
+            lower &= CPU_EQUAL(&now, &set) && !re4cpu::KeepThreadOn(helperTid, set);
+            re4cpu::ReleaseThread(helperTid);
+            CPU_ZERO(&now);
+            sched_getaffinity(helperTid, sizeof(now), &now);
+            lower &= CPU_ISSET(cores - 1, &now) != 0;
+        } else {
+            placed = true;  // a test machine that does not give this process every core
+        }
+        placedDone = true;
+        helper.join();
+        ok &= placed && lower;
+        if (!placed || !lower) {
+            re4_log("  cpuinfo: helper placement %s", where);
+        }
+    }
+    // Android's performance hint: none on Linux, said so
+    {
+        re4cpu::PerfHint hint;
+        const char* why = "";
+        const int tid = re4cpu::ThreadId();
+        ok &= !hint.Open(&tid, 1, 33333333LL, &why) && strcmp(why, "not on this system") == 0 && !hint.On();
+        hint.Report(1000000);  // nothing happens
+    }
+    if (!ok) {
+        re4_log("  cpuinfo: %s", text);
+    }
+    report("cpuinfo", ok);
+}
+
+// The error log's core file (log.cpp re4_log_file, CoreBridge.setLogFile): the lines remembered
+// before it, then every line with logcat's time; at the size limit (RE4_LOG_FILE_LIMIT here, 4 MB
+// in the app) the file becomes <file>.1 and starts anew; after "" nothing more
+static void testLogFile()
+{
+    bool ok = true;
+    char dir[] = "/tmp/re4-log-file-XXXXXX";
+    CHECK(mkdtemp(dir) != nullptr);
+    const std::string path = std::string(dir) + "/core-log.txt";
+    re4_log("log file: a line before the file");
+    setenv("RE4_LOG_FILE_LIMIT", "4096", 1);
+    re4_log_file(path.c_str());
+    unsetenv("RE4_LOG_FILE_LIMIT");
+    for (int i = 0; i < 80; i++) {
+        re4_log("log file: line %d of 80", i);
+    }
+    re4_log_file("");
+    re4_log("log file: a line after it");
+    auto read = [](const std::string& name) {
+        std::string text;
+        if (FILE* f = fopen(name.c_str(), "rb")) {
+            char buffer[4096];
+            size_t n;
+            while ((n = fread(buffer, 1, sizeof(buffer), f)) > 0) {
+                text.append(buffer, n);
+            }
+            fclose(f);
+        }
+        return text;
+    };
+    const std::string now = read(path), before = read(path + ".1");
+    CHECK(!before.empty() && !now.empty());
+    CHECK(before.size() <= 4096 && now.size() <= 4096);
+    CHECK(before.find("--- core log, process ") != std::string::npos);
+    CHECK(before.find("log file: a line before the file") != std::string::npos);
+    CHECK(now.find("log file: line 79 of 80") != std::string::npos);
+    CHECK((before + now).find("a line after it") == std::string::npos);
+    // "10-21 14:03:07.512 " in front of every line
+    int lines = 0, stamped = 0;
+    for (size_t at = 0; at < now.size();) {
+        size_t end = now.find('\n', at);
+        if (end == std::string::npos) {
+            end = now.size();
+        }
+        const std::string line = now.substr(at, end - at);
+        lines++;
+        if (line.size() > 19 && line[2] == '-' && line[5] == ' ' && line[8] == ':' && line[11] == ':' &&
+            line[14] == '.' && line[18] == ' ') {
+            stamped++;
+        }
+        at = end + 1;
+    }
+    CHECK(lines > 0 && stamped == lines);
+    if (!ok) {
+        re4_log("  log file: %u + %u bytes, %d lines, %d with the time", (unsigned) before.size(),
+                (unsigned) now.size(), lines, stamped);
+    }
+    unlink((path + ".1").c_str());
+    unlink(path.c_str());
+    rmdir(dir);
+    report("logfile", ok);
+}
+
 int re4_runtime_tests()
 {
     gFailures = 0;
     testLink();
     testDvd();
+    testDiscRelease();
+    testRetailOrder();
     testYz2();
     testDvdQueue();
     testStream();
@@ -1453,6 +2390,29 @@ int re4_runtime_tests()
     testTasks();
     testLight();
     testPartner();
+    testRoute();
+    testLogFile();
+    testEmAtFlags();
+    testEnemyLog();
+    testDeathLog();
+    testArc();
+    testArcTable();
+    testMovieSubtitles();
+    testCpuInfo();
+    testPartnerDamage();
+    testCaseFreePlace();
+    testMenuTouch();
+    testLetterbox();
+    testKnifeSwipe();
+    testQteTouch();
+    testQteAuto();
+    testCheatExtras();
+    testPotato();
+    testHandcannon();
+    testGyroBoat();
+    testSndBank();
+    testFrameSections();
+    testPathEntry();
     testVsync();
     testWatch();
     re4_log("runtime-test: %d failed", gFailures);

@@ -212,6 +212,8 @@ void re4_dof_autofocus_mark(void* w);
 namespace {
 
 // What a chunk holds, in op order.
+extern "C" void re4_log(const char* format, ...);
+
 struct Parsed {
     const Re4GxDraw* draws[16];
     int drawCount;
@@ -225,6 +227,8 @@ struct Parsed {
     int xfCount;
     bool bpStateFirst;
     int unknown;
+    const uint32_t* owner;  // the first owner tag (patch 0137) and the draw it precedes
+    int ownerBefore;
 };
 
 void parse(const Re4GxChunk* c, Parsed& p)
@@ -251,6 +255,11 @@ void parse(const Re4GxChunk* c, Parsed& p)
         } else if (op == RE4_GX_OP_XF && p.xfCount < 64) {
             p.xfWords[p.xfCount] = n - 1;
             p.xf[p.xfCount++] = payload;
+        } else if (op == RE4_GX_OP_OWNER && n == 4) {
+            if (!p.owner) {
+                p.owner = payload;
+                p.ownerBefore = p.drawCount;
+            }
         } else if (op < RE4_GX_OP_BP || op > RE4_GX_OP_BP_STATE) {
             p.unknown++;
         }
@@ -275,7 +284,11 @@ bool near(f32 a, f32 b)
     return a - b < 0.0001f && b - a < 0.0001f;
 }
 
-u16 sStaticPalette[16] __attribute__((aligned(32)));
+// 256 entries: a TLUT load reads the whole region of its TLUT name (GXLoadTlut writes the
+// region's loadTlut1, GX_TLUT_256 for names 0-15), not the object's entries, on the GameCube as in
+// gx_decode.cpp tlutLoad; with 16 entries the load read 480 bytes past the array (the sanitizer
+// build, 22.10.2026). Only the first 16 are set and checked.
+u16 sStaticPalette[256] __attribute__((aligned(32)));
 
 // A frame's end as the game's Render_done / Render_swap: the display copy,
 // then the VI switched to it (unless the game holds the picture, as with
@@ -370,6 +383,9 @@ extern "C" int re4probe_gx_frame_test(void* fifo, void* mem)
         GXTexCoord2f32(0.25f * i, 0.5f);
     }
 
+    // the owner of the draws that follow (ExecOt, patch 0137): before the strip
+    re4_gx_put_owner(0x80123450u, 0x81000010u, 7, 0x00050003u);
+
     // a triangle strip with the same texture: no new texture op
     GXClearVtxDesc();
     GXSetVtxDesc(9, 1);
@@ -445,6 +461,12 @@ extern "C" int re4probe_gx_frame_test(void* fifo, void* mem)
     // five GXBegins, four draws: the display list joins the strip before it
     if (!p.bpStateFirst || p.unknown != 0 || p.drawCount != 4) {
         failed |= 0x2;
+    }
+    // the owner tag in the chunk, in its place: after the quad, before the strip
+    if (!p.owner || p.ownerBefore != 1 || p.owner[0] != 0x80123450u || p.owner[1] != 0x81000010u || p.owner[2] != 7 ||
+        p.owner[3] != 0x00050003u) {
+        failed |= 0x2;
+        re4_log("  gx: the owner tag is missing or out of place (before draw %d)", p.owner ? p.ownerBefore : -1);
     }
     // the matrix
     bool matrix = false;
@@ -663,6 +685,7 @@ extern "C" void re4probe_gx_produce(void* fifo, void* xfb, int frames, int init)
 
 extern "C" void re4_gx_put_u32(unsigned int v);
 extern "C" void re4_log(const char* format, ...);
+extern "C" void re4_gx_wait_jobs(void);
 
 namespace {
 
@@ -956,7 +979,11 @@ extern "C" unsigned long long re4probe_gx_fingerprint(void* fifo, void* mem, voi
                 vertices(s, r, f, count, entries);
             }
             if (list && listAt + (s.n - listStart) + 64 < 0x100000) {
-                // the draws as a display list in memory, called from the FIFO
+                // the draws as a display list in memory, called from the FIFO. The indices beyond
+                // an array reach up to here: a draw before may still read this memory (the vertex
+                // jobs of gx_decode.cpp convert a little after the command, as the GameCube's GP
+                // read); like a game after GXDrawDone, the test writes it once the GP is done
+                re4_gx_wait_jobs();
                 size_t size = (s.n - listStart + 31) & ~(size_t) 31;
                 memcpy(m + listAt, bytes + listStart, s.n - listStart);
                 memset(m + listAt + (s.n - listStart), 0, size - (s.n - listStart));
@@ -1030,15 +1057,19 @@ extern "C" unsigned re4probe_gx_bench(void* fifo, void* mem, void* xfb, int fram
     for (uint32_t i = 0; i < 0x20000; i++) {  // arrays: positions, normals, texture coordinates, matrices
         m[i] = r.byte();
     }
-    // the list: 1500 strips of 20 vertices, a matrix load before each
+    // the list: 1500 strips of 20 vertices, a matrix load before each (RE4_GX_BENCH_STRIP=N:
+    // strips of N vertices, as many as make 30 000; the forest of r100 has about 8 per GXBegin)
+    const char* stripEnv = getenv("RE4_GX_BENCH_STRIP");
+    const int strip = stripEnv && atoi(stripEnv) >= 3 && atoi(stripEnv) <= 1000 ? atoi(stripEnv) : 20;
+    const int strips = 30000 / strip;
     const uint32_t listAt = 0x20000;
     Stream l = {m + listAt, 0};
-    for (int k = 0; k < 1500; k++) {
+    for (int k = 0; k < strips; k++) {
         l.u8_(0x20);
         l.u32_(r.below(64) << 16 | 11u << 12 | (r.below(8) * 12));
         l.u8_(0x98);
-        l.u16_(20);
-        for (int v = 0; v < 20; v++) {
+        l.u16_((u16) strip);
+        for (int v = 0; v < strip; v++) {
             l.u8_(r.below(8) * 3);
             l.u16_(r.below(2000));
             l.u16_(r.below(2000));
@@ -1075,9 +1106,10 @@ extern "C" unsigned re4probe_gx_bench(void* fifo, void* mem, void* xfb, int fram
                 re4_gx_put_u8(bytes[i]);
             }
         }
+        // the display copy ends the chunk: with the vertex jobs (RE4_GX_THREADS) it waits for them
+        copyDisp(xfb);
         clock_gettime(CLOCK_MONOTONIC, &t1);
         total += (t1.tv_sec - t0.tv_sec) * 1e6 + (t1.tv_nsec - t0.tv_nsec) / 1e3;
-        copyDisp(xfb);
         if (const Re4GxChunk* c = re4_core_gx_acquire()) {
             re4_core_gx_release(c);
         }
