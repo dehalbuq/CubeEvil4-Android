@@ -71,6 +71,9 @@
 #endif
 #else
 #include "low_memory.h"
+#if defined(__aarch64__)
+extern "C" void re4_reserve_high_memory(void);
+#endif
 #endif
 
 using namespace re4ipc;
@@ -1085,6 +1088,11 @@ int main(int argc, char** argv)
         }
     }
 #else
+    // Reserve above 4 GiB before allocating in the child. Game-address
+    // arithmetic must remain below 4 GiB, unlike the separate SDL process.
+#if defined(__aarch64__)
+    re4_reserve_high_memory();
+#endif
     // as the Linux loader of re4_host: everything below 0x83000000 held, MEM1 first
     unsetenv("RE4_MEM1_PLACEHOLDER");
     reserveLowMemory();
