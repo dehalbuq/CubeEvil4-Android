@@ -6,12 +6,15 @@ cd "$HERE"
 mkdir -p "$HERE/logs" "$HERE/cache/shader_binaries"
 LD_LIBRARY_PATH="$HERE:$(printenv LD_LIBRARY_PATH || true)"
 RE4_R36S_LOW_MEM="$(printenv RE4_R36S_LOW_MEM || echo 1)"
+# The 0.99.5 core disables only weather and special visual effects at mask 3.
+# 0 keeps all effects; 31 is a more aggressive A/B test.
+RE4_R36S_POTATO_MASK="$(printenv RE4_R36S_POTATO_MASK || echo 3)"
 RE4_GX_BASEVERTEX="$(printenv RE4_GX_BASEVERTEX || echo 0)"
 RE4_R36S_SWAP_MODE="$(printenv RE4_R36S_SWAP_MODE || echo 5)"
 RE4_R36S_SHADER_CACHE_DIR="$HERE/cache/shader_binaries"
 SDL_VIDEO_EGL_DRIVER="$(printenv SDL_VIDEO_EGL_DRIVER || echo libEGL.so)"
 SDL_VIDEODRIVER="$(printenv SDL_VIDEODRIVER || echo kmsdrm)"
-export LD_LIBRARY_PATH RE4_R36S_LOW_MEM RE4_GX_BASEVERTEX
+export LD_LIBRARY_PATH RE4_R36S_LOW_MEM RE4_R36S_POTATO_MASK RE4_GX_BASEVERTEX
 export RE4_R36S_SWAP_MODE RE4_R36S_SHADER_CACHE_DIR
 export SDL_VIDEO_EGL_DRIVER SDL_VIDEODRIVER
 LOG="$HERE/logs/r36s-upstream0995-last.log"
