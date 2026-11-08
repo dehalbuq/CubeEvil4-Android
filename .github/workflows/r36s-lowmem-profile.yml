@@ -2,6 +2,13 @@ name: R36S low-memory profile unit checks
 
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/r36s-lowmem-profile.yml"
+      - "port/android-decomp/app/src/main/cpp/gx_r36s_profile.h"
+      - "port/android-decomp/app/src/main/cpp/gx_renderer.cpp"
+      - "port/android-decomp/app/src/main/cpp/gx_gl.cpp"
+      - "port/android-decomp/tests/r36s_lowmem_profile_test.cpp"
   push:
     branches:
       - experiment/r36s-upstream-0995-lowmem
