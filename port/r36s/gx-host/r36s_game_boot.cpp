@@ -334,7 +334,7 @@ int main(int argc,char**argv) {
   const bool debugOverlayReady=cleanGameData.prepare(coreDir,originalDataDir);
   const std::string dataDir=debugOverlayReady?cleanGameData.path():originalDataDir;
   if(!debugOverlayReady)
-    fprintf(stderr,"SHOWCASE_DEBUG_TEXT_NOTE=unable_to_prepare_clean_config_overlay; original debug text may remain\n");
+    fprintf(stderr,"SHOWCASE_DEBUG_TEXT_NOTE=unable_to_prepare_clean_config_overlay; reason=%s; original debug text may remain\n",\n            cleanGameData.error.c_str());
 #else
   const std::string dataDir=originalDataDir;
 #endif
