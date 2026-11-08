@@ -1,5 +1,6 @@
 // GxRenderer (gx_gl.h): every call goes to the renderer of its graphics API (gx_core.h; port/docs/vulkan-bauplan.md).
 #include "gx_core.h"
+#include "gx_r36s_profile.h"
 
 #include <algorithm>
 
@@ -31,11 +32,30 @@ GxRenderer::GxRenderer(GxApi api) : api_(api), impl_(MakeCore(api)) {
 GxRenderer::~GxRenderer() = default;
 
 bool GxRenderer::Init(int scale, std::string *error) { return InitHalves(2 * std::max(1, scale), error); }
-bool GxRenderer::InitHalves(int halves, std::string *error) { return impl_->InitHalves(halves, error); }
+bool GxRenderer::InitHalves(int halves, std::string *error) {
+  return impl_->InitHalves(r36s::LimitHalves(halves), error);
+}
 void GxRenderer::Rescale(int scale) { RescaleHalves(2 * std::max(1, scale)); }
-void GxRenderer::RescaleHalves(int halves) { impl_->RescaleHalves(halves); }
+void GxRenderer::RescaleHalves(int halves) { impl_->RescaleHalves(r36s::LimitHalves(halves)); }
 void GxRenderer::HandOverCopies(GxRenderer &to) { impl_->HandOverCopies(*to.impl_); }
-void GxRenderer::SetOptions(const GxOptions &options) { impl_->SetOptions(options); }
+void GxRenderer::SetOptions(const GxOptions &options) {
+  if (!r36s::LowMemory()) {
+    impl_->SetOptions(options);
+    return;
+  }
+  // Presentation-only R36S profile: do not alter any game simulation values.
+  GxOptions small = options;
+  small.samples = r36s::LimitSamples(options.samples);
+  small.anisotropy = r36s::LimitAnisotropy(options.anisotropy);
+  small.tiledMsaa = false;
+  small.fullResolve = false;
+  small.centroid = false;
+  small.vertexRing = false;
+  small.invalidate = false;
+  small.poison = false;
+  small.halfDof = true;
+  impl_->SetOptions(small);
+}
 int GxRenderer::Samples() const { return impl_->Samples(); }
 float GxRenderer::Anisotropy() const { return impl_->Anisotropy(); }
 bool GxRenderer::Invalidates() const { return impl_->Invalidates(); }
@@ -43,12 +63,12 @@ bool GxRenderer::TiledMsaa() const { return impl_->TiledMsaa(); }
 bool GxRenderer::HalfDof() const { return impl_->HalfDof(); }
 void GxRenderer::Run(const Re4GxChunk &chunk) { impl_->Run(chunk); }
 void GxRenderer::SetDepthSink(DepthSink sink) { impl_->SetDepthSink(std::move(sink)); }
-void GxRenderer::SetFxaa(bool on) { impl_->SetFxaa(on); }
-void GxRenderer::SetSharpen(int level) { impl_->SetSharpen(level); }
-void GxRenderer::SetTvFilter(bool on) { impl_->SetTvFilter(on); }
-void GxRenderer::SetPsx(bool on) { impl_->SetPsx(on); }
-void GxRenderer::SetFlares(bool on) { impl_->SetFlares(on); }
-void GxRenderer::SetDofStrong(bool on) { impl_->SetDofStrong(on); }
+void GxRenderer::SetFxaa(bool on) { impl_->SetFxaa(r36s::PostEffect(on)); }
+void GxRenderer::SetSharpen(int level) { impl_->SetSharpen(r36s::LowMemory() ? 0 : level); }
+void GxRenderer::SetTvFilter(bool on) { impl_->SetTvFilter(r36s::PostEffect(on)); }
+void GxRenderer::SetPsx(bool on) { impl_->SetPsx(r36s::PostEffect(on)); }
+void GxRenderer::SetFlares(bool on) { impl_->SetFlares(r36s::PostEffect(on)); }
+void GxRenderer::SetDofStrong(bool on) { impl_->SetDofStrong(r36s::PostEffect(on)); }
 void GxRenderer::SetShownRows(int top, int bottom) { impl_->SetShownRows(top, bottom); }
 void GxRenderer::SetWiden(float factor) { impl_->SetWiden(factor); }
 bool GxRenderer::CanSkip(const Re4GxChunk &a, const Re4GxChunk &b) const { return impl_->CanSkip(a, b); }
@@ -88,6 +108,8 @@ void GxRenderer::Release() {
   impl_->Release();
   // as before: a fresh renderer of the same API afterwards (without the start-up switches of the tests)
   impl_ = MakeCore(api_);
+  if (r36s::LowMemory())
+    impl_->ApplyTestEnvironment();
 }
 
 } // namespace re4gx
