@@ -29,3 +29,14 @@ jobs:
             -o /tmp/r36s_lowmem_profile_test
           /tmp/r36s_lowmem_profile_test
           echo 'R36S low-resource policy checks passed'
+      - name: Verify updated GLES renderer compiles without game assets
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libgles2-mesa-dev libegl1-mesa-dev
+          g++ -std=c++17 -Wall -Wextra -Werror -fsyntax-only \
+            -Iport/android-decomp/app/src/main/cpp \
+            -Iport/whole/runtime \
+            port/android-decomp/app/src/main/cpp/gx_renderer.cpp \
+            port/android-decomp/app/src/main/cpp/gx_gl.cpp
+          echo 'GLES renderer syntax checks passed'
