@@ -1,0 +1,36 @@
+name: R36S experimental Linux SDL2 + GX frontend
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/r36s-linux-frontend.yml"
+      - "port/r36s/**"
+      - "port/android-decomp/app/src/main/cpp/gx_*.cpp"
+      - "port/android-decomp/app/src/main/cpp/gx_*.h"
+  pull_request:
+    paths:
+      - ".github/workflows/r36s-linux-frontend.yml"
+      - "port/r36s/**"
+
+permissions:
+  contents: read
+
+jobs:
+  linux-host-gx-compile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install host SDL2 and EGL/GLES3 dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cmake ninja-build libsdl2-dev libgles2-mesa-dev libegl1-mesa-dev libgl1-mesa-dri xvfb
+      - name: Compile native frontend and actual GLES3 GX renderer
+        run: |
+          cmake -S port/r36s -B /tmp/re4-r36s-host -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build /tmp/re4-r36s-host --parallel 2
+          file /tmp/re4-r36s-host/re4_r36s
+      - name: Smoke-test SDL2 EGL and GX init (Mesa CI; not device performance)
+        run: |
+          xvfb-run -a env LIBGL_ALWAYS_SOFTWARE=1 RE4_R36S_LOW_MEM=1 /tmp/re4-r36s-host/re4_r36s --probe --windowed
