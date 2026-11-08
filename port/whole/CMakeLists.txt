@@ -615,8 +615,11 @@ if(NOT ANDROID)
     # the core in a process of its own (port/docs/32bit-kernprozess.md), 32 bit as on
     # Android: re4_coreproc (host/coreproc.cpp, on Android libre4_coreproc.so) and the
     # app's side against it (re4_core_remote_test, the client of core_mode.cpp)
-    if(CMAKE_SIZEOF_VOID_P EQUAL 4)
+    if(CMAKE_SIZEOF_VOID_P EQUAL 4 OR RE4_ARCH STREQUAL "arm64")
         add_executable(re4_coreproc host/coreproc.cpp runtime/core_ipc.cpp)
+        if(RE4_ARCH STREQUAL "arm64")
+            target_sources(re4_coreproc PRIVATE host/high_memory_coreproc.c)
+        endif()
         add_dependencies(re4_coreproc re4_main re4_hostlib)
         add_executable(re4_core_remote_test tests/core_remote_test.cpp runtime/core_ipc.cpp
             runtime/core_ipc_client.cpp)
