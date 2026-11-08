@@ -65,3 +65,24 @@ Developers on Linux:
 
 For the complete ARM64 game executable, use the CI artifacts from
 the same source revision. No Android Java/JNI code is required.
+
+
+## 0.99.5 native visual reduction (real core option)
+
+The executable now calls the current upstream `re4ipc_set_potato(mask)`
+API, not a removed legacy R36S graphics define. The installation script
+defaults to `RE4_R36S_POTATO_MASK=3` (disable weather and special
+visual effects during ordinary gameplay). The original game rules,
+collision and AI are not changed by this rendering switch.
+
+For a controlled A/B test, override before launch:
+
+    RE4_R36S_POTATO_MASK=0 sh launch-r36s.sh    # all original visual effects
+    RE4_R36S_POTATO_MASK=3 sh launch-r36s.sh    # low: weather + FX disabled
+    RE4_R36S_POTATO_MASK=7 sh launch-r36s.sh    # fewer particles too
+    RE4_R36S_POTATO_MASK=31 sh launch-r36s.sh   # aggressive visual reductions
+
+Bits: 1 weather; 2 special effects; 4/8 particle quality (2-bit
+level); 16 additional light/shadow effects. The upstream core keeps
+effects in cutscenes and events. This is an **unverified performance
+experiment**, not evidence that the game achieves a target FPS.
