@@ -1,0 +1,31 @@
+name: R36S low-memory profile unit checks
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - experiment/r36s-upstream-0995-lowmem
+    paths:
+      - ".github/workflows/r36s-lowmem-profile.yml"
+      - "port/android-decomp/app/src/main/cpp/gx_r36s_profile.h"
+      - "port/android-decomp/app/src/main/cpp/gx_renderer.cpp"
+      - "port/android-decomp/app/src/main/cpp/gx_gl.cpp"
+      - "port/android-decomp/tests/r36s_lowmem_profile_test.cpp"
+
+permissions:
+  contents: read
+
+jobs:
+  host-profile-checks:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile R36S policy tests
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -Wall -Wextra -Werror -pedantic -O2 \
+            -Iport/android-decomp/app/src/main/cpp \
+            port/android-decomp/tests/r36s_lowmem_profile_test.cpp \
+            -o /tmp/r36s_lowmem_profile_test
+          /tmp/r36s_lowmem_profile_test
+          echo 'R36S low-resource policy checks passed'
