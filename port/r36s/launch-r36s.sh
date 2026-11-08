@@ -15,7 +15,7 @@ export LD_LIBRARY_PATH RE4_R36S_LOW_MEM RE4_GX_BASEVERTEX
 export RE4_R36S_SWAP_MODE RE4_R36S_SHADER_CACHE_DIR
 export SDL_VIDEO_EGL_DRIVER SDL_VIDEODRIVER
 LOG="$HERE/logs/r36s-upstream0995-last.log"
-if [ "$(echo "$1" | tr -d '\n')" = "--probe" ];then
+if [ "x${1-}" = "x--probe" ];then
     shift
     exec "$HERE/re4_r36s" --probe "$@" >"$LOG" 2>&1
 fi
