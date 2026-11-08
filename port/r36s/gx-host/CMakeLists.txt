@@ -11,6 +11,8 @@ find_library(GLESV2_LIB GLESv2 REQUIRED)
 add_executable(r36s_gx_host
   r36s_gx_host.cpp
   "${RE4_ANDROID_CPP}/gx_gl.cpp"
+  "${RE4_ANDROID_CPP}/gx_core.cpp"
+  "${RE4_ANDROID_CPP}/gx_renderer.cpp"
   "${RE4_ANDROID_CPP}/gx_gl_shader.cpp"
   "${RE4_ANDROID_CPP}/gx_texture.cpp"
 )
@@ -22,6 +24,8 @@ target_link_libraries(r36s_gx_host PRIVATE PkgConfig::SDL2 "${GLESV2_LIB}" dl)
 add_executable(r36s_live_ipc
   r36s_live_ipc.cpp
   "${RE4_ANDROID_CPP}/gx_gl.cpp"
+  "${RE4_ANDROID_CPP}/gx_core.cpp"
+  "${RE4_ANDROID_CPP}/gx_renderer.cpp"
   "${RE4_ANDROID_CPP}/gx_gl_shader.cpp"
   "${RE4_ANDROID_CPP}/gx_texture.cpp"
   "${RE4_WHOLE_RUNTIME}/core_ipc.cpp"
@@ -35,6 +39,8 @@ target_link_libraries(r36s_live_ipc PRIVATE PkgConfig::SDL2 "${GLESV2_LIB}" dl p
 add_executable(r36s_game_boot
   r36s_game_boot.cpp
   "${RE4_ANDROID_CPP}/gx_gl.cpp"
+  "${RE4_ANDROID_CPP}/gx_core.cpp"
+  "${RE4_ANDROID_CPP}/gx_renderer.cpp"
   "${RE4_ANDROID_CPP}/gx_gl_shader.cpp"
   "${RE4_ANDROID_CPP}/gx_texture.cpp"
   "${RE4_WHOLE_RUNTIME}/core_ipc.cpp"
@@ -52,6 +58,8 @@ target_link_options(r36s_game_boot PRIVATE -rdynamic -Wl,--build-id)
 add_executable(r36s_game_shadercache
   r36s_game_boot.cpp
   "${RE4_ANDROID_CPP}/gx_gl.cpp"
+  "${RE4_ANDROID_CPP}/gx_core.cpp"
+  "${RE4_ANDROID_CPP}/gx_renderer.cpp"
   "${RE4_ANDROID_CPP}/gx_gl_shader.cpp"
   "${RE4_ANDROID_CPP}/gx_texture.cpp"
   "${RE4_WHOLE_RUNTIME}/core_ipc.cpp"
@@ -68,6 +76,8 @@ target_link_options(r36s_game_shadercache PRIVATE -rdynamic -Wl,--build-id)
 add_executable(r36s_game_ps2
   r36s_game_boot.cpp
   "${RE4_ANDROID_CPP}/gx_gl.cpp"
+  "${RE4_ANDROID_CPP}/gx_core.cpp"
+  "${RE4_ANDROID_CPP}/gx_renderer.cpp"
   "${RE4_ANDROID_CPP}/gx_gl_shader.cpp"
   "${RE4_ANDROID_CPP}/gx_texture.cpp"
   "${RE4_WHOLE_RUNTIME}/core_ipc.cpp"
@@ -86,6 +96,8 @@ target_link_options(r36s_game_ps2 PRIVATE -rdynamic -Wl,--build-id)
 set(RE4_R36S_A35_SOURCES
   r36s_game_boot.cpp
   "${RE4_ANDROID_CPP}/gx_gl.cpp"
+  "${RE4_ANDROID_CPP}/gx_core.cpp"
+  "${RE4_ANDROID_CPP}/gx_renderer.cpp"
   "${RE4_ANDROID_CPP}/gx_gl_shader.cpp"
   "${RE4_ANDROID_CPP}/gx_texture.cpp"
   "${RE4_WHOLE_RUNTIME}/core_ipc.cpp"
