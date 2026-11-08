@@ -53,6 +53,28 @@ int main(){
   }
   assert(slurp(data/"disc0/files/debug/config.txt")=="[PRINT_PAGE] 17\r\n[PROCESS_BAR] ON\r\n");
   assert(slurp(data/"memcard/save.dat")=="SAVE");
+  // Some extracted discs have the assets directly under disc0/ rather than
+  // disc0/files/. This must never modify the user's source config.
+  fs::path flat=root/"flat_game";
+  fs::create_directories(flat/"disc0/debug");
+  fs::create_directories(flat/"disc0/bg");
+  save(flat/"disc0/debug/config.txt","[PRINT_PAGE] 28\r\n");
+  save(flat/"disc0/bg/test.dat","SCENE");
+  {
+    ShowcaseCleanData view;
+    assert(view.prepare(core.string(),flat.string()));
+    assert(view.error.empty());
+    assert(slurp(fs::path(view.path())/"disc0/debug/config.txt")=="[PRINT_PAGE] 00\r\n");
+    assert(slurp(flat/"disc0/debug/config.txt")=="[PRINT_PAGE] 28\r\n");
+    assert(slurp(fs::path(view.path())/"disc0/bg/test.dat")=="SCENE");
+  }
+  fs::path missing=root/"missing";
+  fs::create_directories(missing/"disc0");
+  {
+    ShowcaseCleanData view;
+    assert(!view.prepare(core.string(),missing.string()));
+    assert(view.error.find("debug_config_unavailable")!=std::string::npos);
+  }
   std::error_code ec;
   fs::remove_all(root,ec);
   assert(!ec);
