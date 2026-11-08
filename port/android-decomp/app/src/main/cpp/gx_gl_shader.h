@@ -35,15 +35,46 @@ struct ShaderKey {
   std::uint32_t fog;          // BP 0xF1 bits 20-23: projection, function
   std::uint32_t texMaps;      // maps the stages sample (bit per map)
   // both
-  std::uint32_t centroid;     // 1: the varyings at a covered sample (MSAA, GxOptions::centroid)
+  // bit 0: the varyings at a covered sample (MSAA, GxOptions::centroid); bit 1: PSone demake (GxRenderer::SetPsx,
+  // perspective draws only: corners on a 320-wide grid, textures without perspective correction). One field for
+  // both keeps the key's size, and with it the program cache's key files.
+  std::uint32_t centroid;
 };
 
 std::string GxVertexShader(const ShaderKey &key);
 std::string GxFragmentShader(const ShaderKey &key);
+// The vertex shader of a merged draw call (RE4_GX_MERGE, gx_gl.cpp): draws that differ only in
+// the XFM part, the material colours and uMtx in one call. Each of kMergeSlots slots holds a
+// draw's (MergeBlock, binding kMergeBinding); a vertex finds its slot by gl_VertexID (the slots'
+// first vertices ascend).
+std::string GxMergedVertexShader(const ShaderKey &key);
 
-// Uniform blocks (std140, vec4/ivec4 only), shared by all programs.
+// How the fragment shaders write the TEV's lerp ((a << 8) + (b - a) * c, rounded, divided by 256)
+// and the fog's mix, for every program generated from then on (any thread; the GPU check of the
+// movie colours, gx_selfcheck.cpp, picks the first one the GPU computes right):
+//  - kTevMathShift: as the hardware does it, a shifted by 8;
+//  - kTevMathNoShift: a + ((b - a) * c, rounded) >> 8, the same for every input (the division
+//    by 256 rounds down, a * 256 is a multiple of it); the fog likewise. The Galaxy A36 (Adreno
+//    710, driver 0800.58) computed a << 8 in 16 bits: a above 127 gave 0, the movies green
+//    (report 22.10.2026 19:30, the check's six wrong pixels exactly so);
+//  - kTevMathFloat: the lerp in floats (exact: whole numbers below 2^24, a division by 256);
+//  - kTevMathBroken16: tests only, a << 8 wrapped to 16 bits like that A36.
+enum TevMath { kTevMathShift = 0, kTevMathNoShift = 1, kTevMathFloat = 2, kTevMathBroken16 = 3 };
+void SetTevMath(int mode);
+int GetTevMath();
+const char *TevMathName(int mode);
+
+// Uniform blocks (std140, vec4/ivec4 only), shared by all programs. The XF block goes to the GPU
+// in three parts (kXfParts), each at a binding of its own, and a draw uploads only the parts that
+// changed: XFM the position, texture and normal matrices (each model), XFP the post-transform
+// matrices (rarely), XFL lights, colours, viewport and projection. (The 3.3 KB of the whole block
+// per change were 2.4 MB per picture in r10b, R3 series of the Retroid 22.10.2026; in parts 1.3 MB.)
 constexpr int kXfBinding = 0;
 constexpr int kPixelBinding = 1;
+constexpr int kXfParts = 3;
+constexpr int kXfPartBinding[kXfParts] = {kXfBinding, 2, 3};
+constexpr const char *kXfPartName[kXfParts] = {"XFM", "XFP", "XFL"};
+constexpr int kXfPartRow[kXfParts + 1] = {0, 96, 160, 208}; // first rows (vec4) of the parts in XfBlock
 
 struct XfBlock {
   float posTex[64][4];  // XF 0x000-0x0FF: position and texture matrices by row
@@ -54,6 +85,19 @@ struct XfBlock {
   float viewport[2][4]; // sx sy sz ox | oy oz efbWidth efbHeight
   float proj[2][4];     // p0 p1 p2 p3 | p4 p5 type pointSize
 };
+
+// A merged draw call's XFM parts (GxMergedVertexShader): per slot uMtx and the slot's first vertex
+// (gl_VertexID; ~0 for slots not used), then per slot posTex, normal and matAmb as in XfBlock (the
+// game sets the material colours per object). 10 slots fit the 16 KB every GLES 3.0 driver allows
+// for a uniform block (many Mali drivers no more).
+constexpr int kMergeSlots = 10;
+constexpr int kMergeBinding = 4;
+constexpr int kMergeRows = 100;  // vec4 per slot: posTex 64, normal 32, matAmb 4
+struct MergeBlock {
+  std::uint32_t slot[kMergeSlots][4];
+  float xf[kMergeSlots][kMergeRows][4];
+};
+static_assert(sizeof(MergeBlock) <= 16384, "a uniform block of GLES 3.0");
 
 struct PixelBlock {
   std::int32_t colors[4][4];   // TEV registers prev, c0, c1, c2 (signed 11 bit)

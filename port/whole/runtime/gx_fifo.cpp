@@ -53,6 +53,7 @@ const u32 kAliasWindow = 0x00100000;
 const int kAliasSlots = 16;
 uintptr_t gAlias[kAliasSlots];  // host address of each window, 0 = free
 bool gAliasFullLogged;
+uint32_t gAliasGeneration;      // windows given out (re4gx::aliasGeneration)
 
 u32 aliasOf(uintptr_t pointer)
 {
@@ -66,6 +67,7 @@ u32 aliasOf(uintptr_t pointer)
         if (gAlias[s] == 0 && gAlias[s + 1] == 0) {
             gAlias[s] = window;
             gAlias[s + 1] = window + kAliasWindow;
+            gAliasGeneration++;
             return kAliasBase + (u32) s * kAliasWindow + (u32) (pointer - window);
         }
     }
@@ -85,7 +87,9 @@ bool gOverflow;
 void toMemory(const u8* bytes, int n)
 {
     if (gPi[5] != gPiSet) {
-        // the library attached another FIFO (GXSetCPUFifo): start at its pointer
+        // the library attached another FIFO (GXSetCPUFifo): start at its pointer (a list may be
+        // recorded over one the vertex jobs still read)
+        re4gx::finishJobs();
         gWrite = gPi[5] & 0x03FFFFE0;
         gOverflow = false;
     }
@@ -149,6 +153,11 @@ uint8_t* memory(uint32_t physical, uint32_t size)
         return (uint8_t*) (gAlias[s] + offset);
     }
     return nullptr;
+}
+
+uint32_t aliasGeneration()
+{
+    return gAliasGeneration;
 }
 
 uint8_t* memorySpan(uint32_t physical, uint32_t* available)
@@ -233,6 +242,17 @@ void re4_gx_put_u32(unsigned int v)
     put(b, 4);
 }
 
+// The owner of the draws that follow (re4_gx_frame.h RE4_GX_OP_OWNER, patch 0137): a command of
+// the port, byte 0x02 (the GameCube's command processor has none), and four words.
+void re4_gx_put_owner(unsigned int object, unsigned int function, unsigned int table, unsigned int life)
+{
+    re4_gx_put_u8(0x02);
+    re4_gx_put_u32(object);
+    re4_gx_put_u32(function);
+    re4_gx_put_u32(table);
+    re4_gx_put_u32(life);
+}
+
 void re4_gx_put_s8(signed char v)
 {
     re4_gx_put_u8((unsigned char) v);
@@ -292,11 +312,143 @@ void* re4_gx_cached(unsigned int physical)
     return (void*) (uintptr_t) (RE4_MEM1_BASE + physical);
 }
 
+}  // extern "C"
+
+namespace {
+// The depth map GXPeekZ answers from (re4_gx_frame.h, BP 0x5B). The core thread reads single cells
+// while the renderer's thread writes the next map over them: a cell is one word, a mix of two
+// pictures' cells is harmless.
+unsigned int gDepthOwn[RE4_GX_DEPTH_W * RE4_GX_DEPTH_H];
+unsigned int gDepthOwnSerial;
+const unsigned int* gDepthCells = gDepthOwn;
+const unsigned int* gDepthSerial = &gDepthOwnSerial;
+// The pictures by number (24 bits, never 0): the marker carries the number of the picture that peeked,
+// and the renderer hands its map over with that number. Counting markers against maps instead drifted
+// apart with every map the renderer left out (the GPU behind, a renderer made anew when the resolution
+// changed): after 8 the answer stayed "far" for good, the glow shone through walls again (Retroid,
+// 26.10.2026).
+unsigned int gPeekPicture = 1;
+bool gPeekMarked;           // this picture has its marker
+bool gPeekStaleCounted;     // this picture counted in gPeekStaleRun
+unsigned int gPeekStaleRun; // pictures in a row that peeked without a fresh map
+unsigned int gPeekMarkers, gPeekAnswered, gPeekFar, gPeekHidden;
+// a map at most this many pictures old answers (the renderer hands it over a picture or two later)
+const unsigned int kPeekFresh = 8;
+// a renderer that hands over no fresh map for this many peeking pictures in a row (2 s) does not
+// deliver any more: "far" as without maps
+const unsigned int kPeekGiveUp = 60;
+// How old the maps are that answer (pictures between the one that peeks and the map's; 0.98.5, the glows
+// that flash through a wall or Leon's head for a picture: on the GameCube the game reads this picture's depth,
+// here an earlier picture's, and an edge that moved since lets a glow through). Counted per peeking picture;
+// a log line every 900 pictures that peeked ("GXPeekZ: ...").
+unsigned int gPeekAge[9];        // ages 0..7, [8]: 8 and the stale ones
+unsigned int gPeekAgeCounted;    // the picture whose age is counted
+unsigned int gPeekPictures;      // pictures that peeked since the last line
+unsigned int gPeekLastAnswered, gPeekLastFar, gPeekLastHidden;
+void peekAgeNote(unsigned int age)
+{
+    if (gPeekAgeCounted == gPeekPicture) {
+        return;
+    }
+    gPeekAgeCounted = gPeekPicture;
+    gPeekAge[age < 8 ? age : 8]++;
+    if (++gPeekPictures < 900) {
+        return;
+    }
+    re4_log("GXPeekZ: %u pictures peeked, map ages 1: %u, 2: %u, 3: %u, 4: %u, 5: %u, 6-7: %u, 8 or more: %u; "
+            "%u answered, %u far (no map), %u hidden (map too old)",
+            gPeekPictures, gPeekAge[1], gPeekAge[2], gPeekAge[3], gPeekAge[4], gPeekAge[5], gPeekAge[6] + gPeekAge[7],
+            gPeekAge[8], gPeekAnswered - gPeekLastAnswered, gPeekFar - gPeekLastFar, gPeekHidden - gPeekLastHidden);
+    memset(gPeekAge, 0, sizeof(gPeekAge));
+    gPeekPictures = 0;
+    gPeekLastAnswered = gPeekAnswered;
+    gPeekLastFar = gPeekFar;
+    gPeekLastHidden = gPeekHidden;
+}
+}  // namespace
+
+extern "C" {
+
+void re4_gx_depth_put(const unsigned int* cells, unsigned int serial)
+{
+    memcpy(gDepthOwn, cells, sizeof(gDepthOwn));
+    __atomic_store_n(&gDepthOwnSerial, serial, __ATOMIC_RELEASE);
+}
+
+void re4_gx_depth_source(const unsigned int* cells, const unsigned int* serial)
+{
+    gDepthCells = cells ? cells : gDepthOwn;
+    gDepthSerial = serial ? serial : &gDepthOwnSerial;
+}
+
+void re4_gx_peek_new_frame(void)
+{
+    gPeekMarked = false;
+    gPeekStaleCounted = false;
+    gPeekPicture = (gPeekPicture + 1) & 0x00FFFFFF;
+    if (gPeekPicture == 0) {
+        gPeekPicture = 1;
+    }
+}
+
+unsigned int re4_gx_peek_picture(void)
+{
+    return gPeekPicture;
+}
+
+void re4_gx_peek_stats(unsigned int* answered, unsigned int* far, unsigned int* marked)
+{
+    *answered = gPeekAnswered;
+    *far = gPeekFar;
+    *marked = gPeekMarkers;
+}
+
+unsigned int re4_gx_peek_hidden(void)
+{
+    return gPeekHidden;
+}
+
 unsigned int re4_gx_efb_peek(unsigned short x, unsigned short y, int z)
 {
-    (void) x;
-    (void) y;
-    return z ? 0x00FFFFFF : 0;  // depth far, colour black
+    if (!z) {
+        return 0;  // colour: black
+    }
+    // the first depth peek of a picture asks the renderer for the picture's depth: a marker in the
+    // stream, a BP register the GameCube does not have (like 0x5A, the autofocus's), with the picture's
+    // number
+    if (!gPeekMarked) {
+        gPeekMarked = true;
+        gPeekMarkers++;
+        re4_gx_put_u8(0x61);
+        re4_gx_put_u32(0x5Bu << 24 | gPeekPicture);
+    }
+    const unsigned int serial = __atomic_load_n(gDepthSerial, __ATOMIC_ACQUIRE) & 0x00FFFFFF;
+    if (serial == 0) {
+        gPeekFar++;
+        return 0x00FFFFFF;  // no map (a renderer without them): depth far, nothing in front, as before
+    }
+    const unsigned int age = (gPeekPicture - serial) & 0x00FFFFFF;
+    peekAgeNote(age);
+    if (age > kPeekFresh) {
+        // the map is of an older view (the peeks start when a torch comes into view: the last map is
+        // from when one was seen before): in front, the glow waits for the map of this view a picture
+        // or two later instead of flashing through the wall
+        if (!gPeekStaleCounted) {
+            gPeekStaleCounted = true;
+            gPeekStaleRun++;
+        }
+        if (gPeekStaleRun > kPeekGiveUp) {
+            gPeekFar++;
+            return 0x00FFFFFF;
+        }
+        gPeekHidden++;
+        return 0;
+    }
+    gPeekStaleRun = 0;
+    const unsigned cx = (x >= RE4_GX_DEPTH_W * 2 ? RE4_GX_DEPTH_W * 2 - 1 : x) >> 1;
+    const unsigned cy = (y >= RE4_GX_DEPTH_H * 2 ? RE4_GX_DEPTH_H * 2 - 1 : y) >> 1;
+    gPeekAnswered++;
+    return gDepthCells[cy * RE4_GX_DEPTH_W + cx] & 0x00FFFFFF;
 }
 
 void re4_gx_deliver_interrupts(void)

@@ -6,17 +6,20 @@ mkdir -p "$task_build/java"
 
 # Pure-Java contracts require no Android runtime. Optional arguments retain
 # the original DiscTests route: Disc1, Disc2 and an empty extraction directory.
-javac -d "$task_build/java" "$task_root"/app/src/main/java/com/ast/re4decomp/disc/*.java "$task_root/tests/DiscTests.java"
+javac -d "$task_build/java" "$task_root"/app/src/main/java/com/ast/re4decomp/disc/*.java "$task_root/tests/DiscTests.java" "$task_root/tests/RoomFileCheckTests.java"
 java -cp "$task_build/java" DiscTests
+java -cp "$task_build/java" RoomFileCheckTests
 if [[ $# -eq 3 ]]; then
     java -cp "$task_build/java" DiscTests "$task_root/app/src/main/assets/references.tsv" "$1" "$2" "$3"
 fi
 
 javac -d "$task_build/java" "$task_root/app/src/main/java/com/ast/re4decomp/ControllerPolicy.java" "$task_root/tests/ControllerPolicyTests.java"
 java -cp "$task_build/java" ControllerPolicyTests
-javac -Xlint:all -d "$task_build/java" "$task_root/app/src/main/java/com/ast/re4decomp/CoreInput.java" "$task_root/tests/CoreInputTests.java"
+javac -Xlint:all -d "$task_build/java" "$task_root/app/src/main/java/com/ast/re4decomp/CoreInput.java" "$task_root/app/src/main/java/com/ast/re4decomp/ActionMap.java" "$task_root/tests/ActionMapTests.java"
+java -cp "$task_build/java" com.ast.re4decomp.ActionMapTests
+javac -Xlint:all -d "$task_build/java" "$task_root/app/src/main/java/com/ast/re4decomp/CoreInput.java" "$task_root/app/src/main/java/com/ast/re4decomp/ActionMap.java" "$task_root/tests/CoreInputTests.java"
 java -cp "$task_build/java" CoreInputTests
-javac -Xlint:all -d "$task_build/java" "$task_root/app/src/main/java/com/ast/re4decomp/CoreInput.java" "$task_root/app/src/main/java/com/ast/re4decomp/CoreTouch.java" "$task_root/tests/CoreTouchTests.java"
+javac -Xlint:all -d "$task_build/java" "$task_root/app/src/main/java/com/ast/re4decomp/CoreInput.java" "$task_root/app/src/main/java/com/ast/re4decomp/ActionMap.java" "$task_root/app/src/main/java/com/ast/re4decomp/CoreTouch.java" "$task_root/tests/CoreTouchTests.java"
 java -cp "$task_build/java" com.ast.re4decomp.CoreTouchTests
 javac -Xlint:all -d "$task_build/java" "$task_root/app/src/main/java/com/ast/re4decomp/FramePacing.java" "$task_root/tests/FramePacingTests.java"
 java -cp "$task_build/java" com.ast.re4decomp.FramePacingTests
@@ -28,6 +31,8 @@ javac -Xlint:all -d "$task_build/java" "$task_root/app/src/main/java/com/ast/re4
 java -cp "$task_build/java" com.ast.re4decomp.LatencyTunerTests
 javac -Xlint:all -d "$task_build/java" "$task_root/app/src/main/java/com/ast/re4decomp/TouchShowRule.java" "$task_root/tests/TouchShowRuleTests.java"
 java -cp "$task_build/java" com.ast.re4decomp.TouchShowRuleTests
+javac -Xlint:all -d "$task_build/java" "$task_root/app/src/main/java/com/ast/re4decomp/ControllerLog.java" "$task_root/tests/ControllerLogTests.java"
+java -cp "$task_build/java" com.ast.re4decomp.ControllerLogTests
 python3 "$task_root/tools/check_translations.py"
 javac -Xlint:all -d "$task_build/java" "$task_root/app/src/main/java/com/ast/re4decomp/GameMenuLayout.java" "$task_root/app/src/main/java/com/ast/re4decomp/GameMenuNavigation.java" "$task_root/tests/GameMenuNavigationTests.java"
 java -cp "$task_build/java" GameMenuNavigationTests

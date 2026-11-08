@@ -5,6 +5,7 @@
 // texture coordinate generation as the XF unit does them.
 #include "gx_gl_shader.h"
 
+#include <atomic>
 #include <cstdarg>
 #include <cstdio>
 
@@ -20,16 +21,23 @@ void Add(std::string &out, const char *format, ...) {
   out += buffer;
 }
 
+// The XF block in three parts (kXfParts, gx_gl_shader.h): a draw uploads only the parts that
+// changed (the matrices of each model; not the post matrices and lights every time).
+#define RE4_XFL_BLOCK                                                                                   \
+  "layout(std140) uniform XFL {\n"                                                                      \
+  "  vec4 lights[40];\n"                                                                                \
+  "  vec4 matAmb[4];\n"                                                                                 \
+  "  vec4 vp[2];\n"                                                                                     \
+  "  vec4 proj[2];\n"                                                                                   \
+  "};\n"
 const char kUniformBlocks[] =
-    "layout(std140) uniform XF {\n"
+    "layout(std140) uniform XFM {\n"
     "  vec4 posTex[64];\n"
     "  vec4 nrmMtx[32];\n"
+    "};\n"
+    "layout(std140) uniform XFP {\n"
     "  vec4 postMtx[64];\n"
-    "  vec4 lights[40];\n"
-    "  vec4 matAmb[4];\n"
-    "  vec4 vp[2];\n"
-    "  vec4 proj[2];\n"
-    "};\n";
+    "};\n" RE4_XFL_BLOCK;
 
 const char kPixelBlock[] =
     "layout(std140) uniform PX {\n"
@@ -117,6 +125,8 @@ std::string GxVertexShader(const ShaderKey &k) {
   std::string out = "#version 300 es\nprecision highp float;\nprecision highp int;\n";
   out += kUniformBlocks;
   out += "uniform uvec3 uMtx;\n";
+  if (k.orthographic)
+    out += "uniform float uWiden;\n";
   out += "layout(location = 0) in vec3 aPos;\n";
   if (Has(k, 1u))
     out += "layout(location = 1) in vec3 aNrm;\n";
@@ -131,10 +141,16 @@ std::string GxVertexShader(const ShaderKey &k) {
       Add(out, "layout(location = %d) in vec2 aTex%d;\n", 6 + i, i);
   if (Has(k, 1u << 12))
     out += "layout(location = 14) in uvec3 aMtx;\n";
-  const char *outQ = k.centroid ? "centroid out" : "out";
+  const char *outQ = (k.centroid & 1) ? "centroid out" : "out";
+  // PSone demake (ShaderKey::centroid bit 1, 3D only): the corners snap to a coarse grid (below). The
+  // texture coordinates stay perspective-correct: affine ones, as the PlayStation drew, slid along the
+  // game's long polygons as the camera moved (beams, the project owner's report 03.11.2026)
+  const bool psx = (k.centroid & 2) && !k.orthographic;
   Add(out, "%s vec4 vColor0;\n%s vec4 vColor1;\n", outQ, outQ);
   for (unsigned i = 0; i < k.numTexGens; i++)
     Add(out, "%s vec3 vTex%u;\n", outQ, i);
+  if (psx)
+    out += "out vec3 vPsxPos;\nout vec3 vPsxClip;\n";
   out += "int mtxByte(uvec3 m, int n) {\n"
          "  uint w = n < 4 ? m.x : n < 8 ? m.y : m.z;\n"
          "  return int((w >> uint(8 * (n & 3))) & 63u);\n"
@@ -169,6 +185,32 @@ std::string GxVertexShader(const ShaderKey &k) {
          "                     ((vp[1].x - 342.0) * 2.0 / H - 1.0) * clip.w + vp[0].y * 2.0 / H * clip.y,\n"
          "                     2.0 * (vp[0].z * clip.z + vp[1].y * clip.w) / 16777215.0 - clip.w, clip.w);\n"
          "  gl_PointSize = max(1.0, proj[1].w);\n";
+  // "4:3 (exact)" (GxRenderer::SetWiden): the flat draws (HUD, menus, text) wider around the
+  // viewport's centre by the factor the 4:3 picture narrows them; 1 otherwise
+  if (k.orthographic)
+    out += "  float cx = ((vp[0].w - 342.0) * 2.0 / W - 1.0) * gl_Position.w;\n"
+           "  gl_Position.x = cx + (gl_Position.x - cx) * uWiden;\n";
+  // The console samples a pixel at 7/12 of its width and height, GLES at 1/2 (Dolphin's pixel centre
+  // correction): everything moves 1/12 of a GameCube pixel up and left, so what is thinner than a
+  // pixel and lies on a pixel's edge still hits it as there (the rifle scope's horizontal line at 1x
+  // fell between two rows, user report 29.10.2026). EFB rows grow with GL's y here (no flip).
+  out += "  gl_Position.xy -= gl_Position.w * vec2(1.0 / (6.0 * W), 1.0 / (6.0 * H));\n";
+  // PSone demake: the corners snap to a grid of half the GameCube's pixels (320 wide), as the
+  // PlayStation's whole-pixel corners made the polygons wobble. The depth stays that of the surface as
+  // the game placed it: the fragment shader takes it from the plane through the unsnapped corners
+  // (vPsxPos) where the ray through the pixel (vPsxClip, the snapped position) meets it. With the
+  // corners' depths snapped along (until 0.98.0) or moved within the plane their normals give (the
+  // first fix of 0.98.1), surfaces close together tilted by different amounts: a carpet sank below the
+  // floor, walls flickered at the skirting, Ashley's belt and the fireplaces' bricks flickered, and
+  // blinking items showed through the walls of huts (the owner's dumps of 04.11.2026).
+  if (psx) {
+    out += "  vPsxPos = pos;\n"
+           "  if (gl_Position.w > 0.0) {\n"
+           "    vec2 g = vec2(W, H) * 0.25;\n"
+           "    gl_Position.xy = floor(gl_Position.xy / gl_Position.w * g + 0.5) / g * gl_Position.w;\n"
+           "  }\n"
+           "  vPsxClip = gl_Position.xyw;\n";
+  }
   // lighting channels
   out += "  vec4 col0 = vec4(1.0);\n  vec4 col1 = vec4(1.0);\n";
   for (unsigned c = 0; c < 2 && c < k.numChans; c++) {
@@ -238,6 +280,50 @@ std::string GxVertexShader(const ShaderKey &k) {
 
 namespace {
 
+void ReplaceAll(std::string &s, const std::string &from, const std::string &to) {
+  for (std::size_t at = s.find(from); at != std::string::npos; at = s.find(from, at + to.size()))
+    s.replace(at, from.size(), to);
+}
+
+} // namespace
+
+// GxVertexShader with the XFM part and uMtx of the vertex's slot: the same arithmetic on the same
+// values, so the merged draw gives the pixels of the single draws.
+std::string GxMergedVertexShader(const ShaderKey &k) {
+  std::string out = GxVertexShader(k);
+  char block[256];
+  std::snprintf(block, sizeof(block),
+                "layout(std140) uniform XFMM {\n"
+                "  uvec4 mSlot[%d];\n"
+                "  vec4 mXf[%d];\n"
+                "};\n",
+                kMergeSlots, kMergeSlots * kMergeRows);
+  ReplaceAll(out, "layout(std140) uniform XFM {\n  vec4 posTex[64];\n  vec4 nrmMtx[32];\n};\n", block);
+  ReplaceAll(out, "uniform uvec3 uMtx;\n", "");
+  char slot[256];
+  std::snprintf(slot, sizeof(slot),
+                "void main() {\n"
+                "  int slot = 0;\n"
+                "  for (int s = 1; s < %d; s++) {\n"
+                "    if (uint(gl_VertexID) < mSlot[s].w) break;\n"
+                "    slot = s;\n"
+                "  }\n"
+                "  int xb = slot * %d;\n",
+                kMergeSlots, kMergeRows);
+  // the uses in main (XFL still declares matAmb)
+  const std::size_t main = out.find("void main() {\n");
+  std::string body = out.substr(main);
+  out.resize(main);
+  ReplaceAll(body, "void main() {\n", slot);
+  ReplaceAll(body, "uvec3 m = uMtx;", "uvec3 m = mSlot[slot].xyz;");
+  ReplaceAll(body, "posTex[", "mXf[xb + ");
+  ReplaceAll(body, "nrmMtx[", "mXf[xb + 64 + ");
+  ReplaceAll(body, "matAmb[", "mXf[xb + 96 + ");
+  return out + body;
+}
+
+namespace {
+
 const char *kColorIn[16] = {"prev.rgb",     "prev.aaa",     "c0.rgb",       "c0.aaa",
                             "c1.rgb",       "c1.aaa",       "c2.rgb",       "c2.aaa",
                             "textemp.rgb",  "textemp.aaa",  "rastemp.rgb",  "rastemp.aaa",
@@ -272,18 +358,47 @@ std::string Swizzle(std::uint32_t table) {
   return s;
 }
 
+std::atomic<int> gTevMath{kTevMathShift};
+
 // (d + bias) op lerp(a, b, c), scaled, with the hardware's rounding: c is
 // widened to 0..256, a scale above one moves inside the lerp, and a rounding
 // bias is added before the division by 256 (not with the halving scale).
+// Written as SetTevMath says; all of them give the same numbers.
 std::string Regular(const char *comp, unsigned bias, unsigned op, unsigned scale) {
   static const char *biasStr[4] = {"", " + 128", " - 128", ""};
   static const char *left[4] = {"", " << 1", " << 2", ""};
+  static const char *times[4] = {"", " * 2", " * 4", ""};
+  static const char *timesF[4] = {"", " * 2.0", " * 4.0", ""};
   static const char *right[4] = {"", "", "", " >> 1"};
   const std::string c = comp;
+  const bool vec = c.size() > 1;
   const std::string d = "((tevin_d." + c + biasStr[bias] + ")" + left[scale] + ")";
-  const std::string lerp = "(((tevin_a." + c + " << 8) + (tevin_b." + c + " - tevin_a." + c + ") * (tevin_c." + c +
-                           " + (tevin_c." + c + " >> 7)))" + left[scale] + ")";
-  const std::string rounded = "((" + lerp + (scale != 3 ? (op ? " + 127" : " + 128") : "") + ") >> 8)";
+  const std::string a = "tevin_a." + c, diff = "(tevin_b." + c + " - tevin_a." + c + ")",
+                    factor = "(tevin_c." + c + " + (tevin_c." + c + " >> 7))";
+  const char *round = scale != 3 ? (op ? " + 127" : " + 128") : "";
+  std::string rounded;
+  switch (gTevMath.load()) {
+  case kTevMathNoShift:
+    rounded = "((" + a + times[scale] + ") + (((" + diff + " * " + factor + ")" + times[scale] + round + ") >> 8))";
+    break;
+  case kTevMathFloat: {
+    const std::string f = vec ? "vec3" : "float", i = vec ? "ivec3" : "int";
+    rounded = i + "(floor(((" + f + "(" + a + ") * 256.0 + " + f + "(" + diff + ") * " + f + "(" + factor + "))" +
+              timesF[scale] + (scale != 3 ? (op ? " + 127.0" : " + 128.0") : "") + ") / 256.0))";
+    break;
+  }
+  case kTevMathBroken16: {
+    const std::string shifted = "(((" + a + " << 8) << 16) >> 16)";
+    const std::string lerp = "((" + shifted + " + " + diff + " * " + factor + ")" + left[scale] + ")";
+    rounded = "((" + lerp + round + ") >> 8)";
+    break;
+  }
+  default: {
+    const std::string lerp = "(((" + a + " << 8) + " + diff + " * " + factor + ")" + left[scale] + ")";
+    rounded = "((" + lerp + round + ") >> 8)";
+    break;
+  }
+  }
   return "((" + d + (op ? " - " : " + ") + rounded + ")" + right[scale] + ")";
 }
 
@@ -323,10 +438,13 @@ const char *AlphaFunc(unsigned f, const char *ref) {
 std::string GxFragmentShader(const ShaderKey &k) {
   std::string out = "#version 300 es\nprecision highp float;\nprecision highp int;\n";
   out += kPixelBlock;
+  const bool psx = (k.centroid & 2) && !k.orthographic;  // as in GxVertexShader
+  if (psx)
+    out += RE4_XFL_BLOCK "in vec3 vPsxPos;\nin vec3 vPsxClip;\n";
   for (int m = 0; m < 8; m++)
     if (k.texMaps & (1u << m))
       Add(out, "uniform sampler2D s%d;\n", m);
-  const char *inQ = k.centroid ? "centroid in" : "in";
+  const char *inQ = (k.centroid & 1) ? "centroid in" : "in";
   Add(out, "%s vec4 vColor0;\n%s vec4 vColor1;\n", inQ, inQ);
   for (unsigned i = 0; i < k.numTexGens; i++)
     Add(out, "%s vec3 vTex%u;\n", inQ, i);
@@ -340,6 +458,26 @@ std::string GxFragmentShader(const ShaderKey &k) {
           "}\n",
           m, m, m, m);
   out += "void main() {\n";
+  // PSone demake: the depth of the unsnapped surface at this pixel (GxVertexShader). Its plane is the one
+  // vPsxPos lies on (every value of it is a mix of the three unsnapped corners); the ray through the pixel
+  // is the viewport and projection backwards from the snapped position. Seen edge-on or where the plane
+  // would put the pixel far off, the depth the snapped triangle gives.
+  if (psx)
+    out += "  float fragZ = gl_FragCoord.z;\n"
+           "  {\n"
+           "    float W = vp[1].z, H = vp[1].w;\n"
+           "    vec2 ndc = vPsxClip.xy / vPsxClip.z;\n"
+           "    vec2 k = vec2(vp[0].x * 2.0 / W * proj[0].x, vp[0].y * 2.0 / H * proj[0].z);\n"
+           "    vec2 c = vec2((vp[0].w - 342.0) * 2.0 / W - 1.0 - 1.0 / (6.0 * W) - vp[0].x * 2.0 / W * proj[0].y,\n"
+           "                  (vp[1].x - 342.0) * 2.0 / H - 1.0 - 1.0 / (6.0 * H) - vp[0].y * 2.0 / H * proj[0].w);\n"
+           "    vec3 ray = vec3((c - ndc) / k, 1.0);\n"
+           "    vec3 n = cross(dFdx(vPsxPos), dFdy(vPsxPos));\n"
+           "    float den = dot(n, ray);\n"
+           "    float z = dot(n, vPsxPos) / den;\n"
+           "    if (abs(den) > 1e-4 * length(n) * length(ray) && z < 0.0 && abs(z - vPsxPos.z) <= 0.5 * abs(vPsxPos.z))\n"
+           "      fragZ = clamp((vp[0].z * (proj[1].x * z + proj[1].y) / -z + vp[1].y) / 16777215.0, 0.0, 1.0);\n"
+           "  }\n"
+           "  gl_FragDepth = fragZ;\n";
   out += "  ivec4 prev = colors[0];\n  ivec4 c0 = colors[1];\n  ivec4 c1 = colors[2];\n  ivec4 c2 = colors[3];\n";
   out += "  ivec4 rastemp = ivec4(0);\n  ivec4 textemp = ivec4(0);\n  ivec4 konsttemp = ivec4(0);\n";
   out += "  ivec4 tevin_a, tevin_b, tevin_c, tevin_d;\n";
@@ -490,7 +628,7 @@ std::string GxFragmentShader(const ShaderKey &k) {
   {
     const unsigned proj = k.fog & 1, fsel = (k.fog >> 1) & 7;
     if (fsel) {
-      out += "  int zc = int(gl_FragCoord.z * 16777215.0);\n";
+      Add(out, "  int zc = int(%s * 16777215.0);\n", psx ? "fragZ" : "gl_FragCoord.z");
       if (proj == 0)
         out += "  float ze = (fogParam[0].x * 16777216.0) / (fogParam[0].z - float(zc >> int(fogParam[0].w)));\n";
       else
@@ -505,13 +643,35 @@ std::string GxFragmentShader(const ShaderKey &k) {
       else if (fsel == 7)
         out += "  fog = 1.0 - fog;\n  fog = exp2(-8.0 * fog * fog);\n";
       out += "  int ifog = int(round(fog * 256.0));\n";
-      out += "  prev.rgb = (prev.rgb * (256 - ifog) + ivec3(fogParam[1].xyz) * ifog) >> 8;\n";
+      if (gTevMath.load() == kTevMathShift || gTevMath.load() == kTevMathBroken16)
+        out += "  prev.rgb = (prev.rgb * (256 - ifog) + ivec3(fogParam[1].xyz) * ifog) >> 8;\n";
+      else // the same numbers without prev * 256 (SetTevMath)
+        out += "  prev.rgb += ((ivec3(fogParam[1].xyz) - prev.rgb) * ifog) >> 8;\n";
     }
   }
   out += "  oColor = vec4(prev) / 255.0;\n";
   // destination alpha (GXSetDstAlpha) when the renderer lets the shader write it
   out += "  if (alphaRef.z >= 0) oColor.a = float(alphaRef.z) / 255.0;\n}\n";
   return out;
+}
+
+void SetTevMath(int mode) { gTevMath = mode >= kTevMathShift && mode <= kTevMathBroken16 ? mode : kTevMathShift; }
+
+int GetTevMath() { return gTevMath.load(); }
+
+const char *TevMathName(int mode) {
+  switch (mode) {
+  case kTevMathShift:
+    return "the lerp as the hardware computes it";
+  case kTevMathNoShift:
+    return "the lerp without the shift by 8";
+  case kTevMathFloat:
+    return "the lerp in floats";
+  case kTevMathBroken16:
+    return "the lerp broken to 16 bits (test)";
+  default:
+    return "?";
+  }
 }
 
 } // namespace re4gx

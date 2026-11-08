@@ -26,6 +26,7 @@ public final class CoreTouchTests {
     final List<String> calls = new ArrayList<>();
     @Override public void select(boolean down) { calls.add("select " + down); }
     @Override public void latched(String action, boolean on) { calls.add(action + " " + on); }
+    @Override public void r3(boolean down) { calls.add("r3 " + down); }
   }
 
   public static void main(String[] args) {
@@ -46,6 +47,16 @@ public final class CoreTouchTests {
     }
     t.action("unknown", true);
     check(in.pad()[0] == 0);
+
+    // R3: the app's graphics capture, no GameCube button; offered to the editor with its label
+    host.calls.clear();
+    t.action(CoreTouch.R3, true);
+    t.action(CoreTouch.R3, false);
+    check(in.pad()[0] == 0 && host.calls.size() == 2 && host.calls.get(0).equals("r3 true")
+        && host.calls.get(1).equals("r3 false"));
+    check(CoreTouch.label(CoreTouch.R3).equals("R3")
+        && CoreTouch.ACTIONS.length == CoreTouch.LABELS.length && CoreTouch.LABELS.length == CoreTouch.COLOURS.length);
+    host.calls.clear();
 
     // L and R by default: held while the finger is on them (the trigger at its end stop), as real buttons
     check(!t.latch());
@@ -102,6 +113,39 @@ public final class CoreTouchTests {
         && host.calls.equals(List.of("r false")));
     host.calls.clear();
 
+    // "Latch B" (22.10.2026): off, B is held while touched; on, a tap keeps B (run) pressed, the
+    // next tap lets go; L and R stay as they are; switching it off or a reset lets B go
+    check(!t.latchB());
+    t.action(CoreTouch.B, true);
+    check(in.pad()[0] == CoreInput.GC_B && !t.latched(CoreTouch.B));
+    t.action(CoreTouch.B, false);
+    check(in.pad()[0] == 0 && host.calls.isEmpty());
+    t.setLatchB(true);
+    check(t.latchB() && !t.latch());
+    t.action(CoreTouch.B, true);
+    t.action(CoreTouch.B, false);
+    check(in.pad()[0] == CoreInput.GC_B && t.latched(CoreTouch.B));
+    t.action(CoreTouch.A, true);
+    check(in.pad()[0] == (CoreInput.GC_B | CoreInput.GC_A));
+    t.action(CoreTouch.A, false);
+    t.action(CoreTouch.R, true);
+    t.action(CoreTouch.R, false);
+    check(in.pad()[0] == CoreInput.GC_B && !t.latched(CoreTouch.R));
+    t.action(CoreTouch.B, true);
+    t.action(CoreTouch.B, false);
+    check(in.pad()[0] == 0 && !t.latched(CoreTouch.B) && host.calls.equals(List.of("b true", "b false")));
+    host.calls.clear();
+    t.action(CoreTouch.B, true);
+    t.setLatchB(false);
+    check(!t.latchB() && in.pad()[0] == 0 && host.calls.equals(List.of("b true", "b false")));
+    host.calls.clear();
+    t.setLatchB(true);
+    t.action(CoreTouch.B, true);
+    t.reset();
+    check(in.pad()[0] == 0 && !t.latched(CoreTouch.B) && host.calls.equals(List.of("b true", "b false")));
+    t.setLatchB(false);
+    host.calls.clear();
+
     // the move stick is the control stick (raw, up positive)
     t.move(1, 0);
     check(in.pad()[1] == 101 && in.pad()[2] == 0);
@@ -109,6 +153,34 @@ public final class CoreTouchTests {
     check(in.pad()[1] == 0 && in.pad()[2] == 101);
     t.move(0, 0);
     check(in.pad()[1] == 0 && in.pad()[2] == 0);
+
+    // the C stick as an analog stick of the editor (RetroTouch's stick action, not in the default
+    // layout, wish of the project owner 26.10.2026): its tilt as it is, back when let go; with the look
+    // zone the one that tilts further counts; yellow as on the GameCube, no button of its own
+    check(CoreTouch.isStick(CoreTouch.C_STICK) && !CoreTouch.isStick(CoreTouch.A));
+    check(CoreTouch.label(CoreTouch.C_STICK).equals("C") && CoreTouch.gcButton(CoreTouch.C_STICK) == 0);
+    t.stick(CoreTouch.C_STICK, 1, 0);
+    check(in.pad()[0] == 0 && in.pad()[3] == 92 && in.pad()[4] == 0 && host.calls.isEmpty());
+    t.stick(CoreTouch.C_STICK, 0.5f, -1);
+    check(in.pad()[3] == 46 && in.pad()[4] == 92);
+    t.stick("other", 0, 0);  // another stick action: nothing
+    check(in.pad()[3] == 46 && in.pad()[4] == 92);
+    t.stick(CoreTouch.C_STICK, 0, 0);
+    check(in.pad()[3] == 0 && in.pad()[4] == 0);
+    t.stick(CoreTouch.C_STICK, 0, 1);
+    check(in.pad()[4] == -92);
+    t.reset();  // everything let go
+    check(in.pad()[3] == 0 && in.pad()[4] == 0);
+    t.stick(CoreTouch.C_STICK, 1, 0);
+    t.beginEvent();
+    t.fingerDown(5, true);
+    t.look(CoreTouch.LOOK_RANGE / 2, 0);  // the look zone tilts less than the stick: the stick stays
+    check(in.pad()[3] == 92);
+    t.look(0, 0);
+    t.stick(CoreTouch.C_STICK, 0, 0);
+    check(in.pad()[3] == 46);  // the looking finger shows through again
+    t.fingerUp(5);
+    check(in.pad()[3] == 0 && in.pad()[4] == 0);
 
     // the look zone: a finger that went down there (no control answered) tilts the C stick by its way
     t.beginEvent();
@@ -162,6 +234,55 @@ public final class CoreTouchTests {
     t.cancel();
     check(!t.looking() && in.pad()[4] == 0);
 
+    // touch aiming (the menu's "Touch Aiming"): while R is held the chosen way moves the control
+    // stick, the other stays the C stick; without R both are the C stick
+    t.reset();
+    check(in.touchAim() == CoreInput.AIM_MOVE_STICK);
+    t.beginEvent();
+    t.fingerDown(2, true);
+    t.look(CoreTouch.LOOK_RANGE, 0);
+    t.action(CoreTouch.R, true);
+    int[] p = in.pad();
+    check(p[1] == 0 && p[3] == 92);  // the default: aiming as on the GameCube, the look zone looks
+    in.setTouchAim(CoreInput.AIM_LOOK);
+    p = in.pad();
+    // the look zone aims by swipes (29.10.2026): no stick, no look while R is held
+    check(p[1] == 0 && p[2] == 0 && p[3] == 0 && p[0] == CoreInput.GC_R && in.takeAimSwipe() == null);
+    t.look(0.1f, 0);  // a swipe to the right: the aim turns right (yaw negative) by the swipe's way
+    p = in.pad();
+    float[] turn = in.takeAimSwipe();
+    check(turn != null && Math.abs(turn[0] + 0.1f * CoreInput.SWIPE_RADIANS) < 1e-5f && turn[1] == 0 && p[1] == 0
+        && p[3] == 0);
+    check(in.takeAimSwipe() == null);  // the finger stops: the aim stops
+    t.look(0.02f, -0.05f);
+    t.look(0.03f, 0);  // two moves before the next event: added up, up is positive
+    in.pad();
+    turn = in.takeAimSwipe();
+    check(turn != null && Math.abs(turn[0] + 0.05f * CoreInput.SWIPE_RADIANS) < 1e-5f
+        && Math.abs(turn[1] - 0.05f * CoreInput.SWIPE_RADIANS) < 1e-5f);
+    t.stick(CoreTouch.C_STICK, 0, -1);
+    p = in.pad();
+    check(p[1] == 0 && p[3] == 0 && p[4] == 92);  // the C stick control stays the C stick
+    t.move(-0.2f, 0);
+    check(in.pad()[1] < 0);  // the move stick still aims as on the GameCube
+    t.move(0, 0);
+    in.setTouchAim(CoreInput.AIM_C_STICK);
+    t.look(CoreTouch.LOOK_RANGE, 0);  // not by swipes now: the zone looks again
+    check(in.takeAimSwipe() == null);
+    p = in.pad();
+    check(p[2] > 0 && p[1] == 0 && p[3] == 92 && p[4] == 0);  // now the C stick control aims up, the zone looks
+    t.action(CoreTouch.R, false);
+    p = in.pad();
+    check(p[1] == 0 && p[2] == 0 && p[4] == 92);  // R let go: both the C stick again
+    // R let go with "Touch Area": the zone's finger looks, no swipe aims
+    in.setTouchAim(CoreInput.AIM_LOOK);
+    in.pad();
+    t.look(-0.01f, 0);
+    check(in.takeAimSwipe() == null);
+    in.setTouchAim(9);
+    check(in.touchAim() == CoreInput.AIM_MOVE_STICK);
+    t.reset();
+
     // the touch controls next to a real controller: buttons of both, the stick moved furthest
     in.key(1, 96, true);  // KEYCODE_BUTTON_A
     t.action(CoreTouch.B, true);
@@ -195,11 +316,11 @@ public final class CoreTouchTests {
   /** The default layout with RetroTouch's rules and geometry (RetroTouchView.contains, drawButton). */
   static void layout() {
     check(CoreTouch.ACTIONS.length == CoreTouch.LABELS.length && CoreTouch.ACTIONS.length == CoreTouch.COLOURS.length);
-    // the GameCube's colours: A green, B red, Z purple, every other button grey
+    // the GameCube's colours: A green, B red, Z purple, the C stick yellow, every other button grey
     for (int i = 0; i < CoreTouch.ACTIONS.length; i++) {
       String a = CoreTouch.ACTIONS[i];
       int want = a.equals(CoreTouch.A) ? 0xFF109B61 : a.equals(CoreTouch.B) ? 0xFFF6392C
-          : a.equals(CoreTouch.Z) ? 0xFF6B5CB1 : 0xFFDDDDDD;
+          : a.equals(CoreTouch.Z) ? 0xFF6B5CB1 : a.equals(CoreTouch.C_STICK) ? 0xFFF7C81E : 0xFFDDDDDD;
       check(CoreTouch.COLOURS[i] == want);
     }
     Set<String> registered = new HashSet<>();
@@ -209,7 +330,8 @@ public final class CoreTouchTests {
       // short labels: RetroTouch shrinks the text to the button, five letters stay readable
       check(!CoreTouch.LABELS[i].isEmpty() && CoreTouch.LABELS[i].length() <= 5);
       check(CoreTouch.label(a).equals(CoreTouch.LABELS[i]));
-      check(a.equals(CoreTouch.MENU) ? CoreTouch.gcButton(a) == 0 : CoreTouch.gcButton(a) != 0);
+      boolean noButton = a.equals(CoreTouch.MENU) || a.equals(CoreTouch.R3) || CoreTouch.isStick(a);  // app / C stick actions
+      check(noButton ? CoreTouch.gcButton(a) == 0 : CoreTouch.gcButton(a) != 0);
     }
     Set<String> ids = new HashSet<>(), used = new HashSet<>();
     int buttons = 0, sticks = 0, looks = 0, pads = 0;
@@ -226,9 +348,13 @@ public final class CoreTouchTests {
         pads++;
       }
     }
-    // every action has its button; RetroTouch's limits (RetroTouchLayout.validate)
-    check(used.equals(registered) && buttons <= 16 && sticks == 1 && looks == 1 && pads == 1);
-    // one move stick: RetroTouch's onMove does not say which stick moved
+    // every action has its button but R3 (the editor adds it, wish of the project owner, 24.10.2026);
+    // RetroTouch's limits (RetroTouchLayout.validate), with room for R3
+    Set<String> placed = new HashSet<>(registered);
+    placed.remove(CoreTouch.R3);
+    placed.remove(CoreTouch.C_STICK);
+    check(used.equals(placed) && buttons + 1 <= 16 && sticks == 1 && looks == 1 && pads == 1);
+    // one move stick in the default layout, room for the C stick (RetroTouch: at most two sticks)
 
     // the touch areas: a button and the stick an ellipse of half the width and height times
     // sqrt(1.15), the D-pad its rectangle; in shares of the screen a circle, whatever the screen

@@ -59,6 +59,66 @@ endif()
 # effects, a few runtime functions; armhf (VFPv3) and x86 have none, so the 32/64-bit compare
 # on the PC could not see it (19.10.2026). whole_build.sh counts them in the aarch64 build.
 add_compile_options(-ffp-contract=off)
+# Check build with sanitizers (whole_build.sh RE4_SANITIZE=address,undefined: build folder
+# whole-<target>-O2-san; the room tour of the PC check, whole_r100_check.sh --sanitize).
+# AddressSanitizer stops at the first access outside a global, a local or a block of the C
+# library's heap, with where it happened (the game heaps in MEM1 have no guard zones);
+# UndefinedBehaviorSanitizer names each undefined operation once and goes on (a shift by 32 or
+# more, an array index past its end, a float that does not fit its integer, a bool that is
+# neither 0 nor 1 ...). Left out: vptr and function (the game converts between its object types
+# and calls task functions through TaskFunc on purpose), return (CodeWarrior code ends non-void
+# functions without a value, -fno-strict-return), null, nonnull-attribute and pointer-overflow
+# (offsetof-like address arithmetic, memcpy of 0 bytes from 0; a real access through 0 crashes
+# anyway; object-size takes PG_OFS, &((GLOBAL_WK*) 0)->f, for an access through 0:
+# AddressSanitizer checks the sizes), alignment (the SDK's sound library writes words to 2-byte
+# aligned DSP blocks, as the GameCube allows; over 100 places) and float-cast-overflow (the game's
+# code is built with
+# -fno-strict-float-cast-overflow: it clamps like the GameCube). The runtime is a shared
+# library (-shared-libsan): the modules are libraries of their own, loaded with dlopen and linked
+# with --no-undefined.
+set(RE4_SANITIZE "" CACHE STRING "sanitizers of a check build (-fsanitize=LIST; empty = none)")
+if(RE4_SANITIZE)
+    set(san_off vptr,function,return,null,nonnull-attribute,returns-nonnull-attribute,pointer-overflow,object-size,float-cast-overflow)
+    # alignment only when asked for by name (RE4_SANITIZE=alignment): the search for misaligned
+    # floats and pointers, which armv7 reads with vldr / ldrd / ldm and which then fault (patch 0102)
+    if(NOT RE4_SANITIZE MATCHES "alignment")
+        string(APPEND san_off ",alignment")
+    endif()
+    set(RE4_SANITIZE_FLAGS -fsanitize=${RE4_SANITIZE} -fno-omit-frame-pointer -fno-sanitize=${san_off})
+    # (line tables: file and line in the reports)
+    add_compile_options(${RE4_SANITIZE_FLAGS} -gline-tables-only)
+    # clang's runtime for the target, its folder in each program and library (no
+    # LD_LIBRARY_PATH needed). Ubuntu ships it for x86 only: for aarch64 the cross GCC's
+    # UndefinedBehaviorSanitizer runtime (libubsan1-arm64-cross, the same compiler-rt code; qemu
+    # finds it through QEMU_LD_PREFIX). AddressSanitizer does not run there: with GCC's libasan
+    # even a three-line program crashes under qemu-aarch64, and in a guest space of 4 GB
+    # (whole_r100_check.sh) its shadow at 64 GB has no room (22.10.2026). On x86_64 its shadow
+    # (0x7FFF8000-0x8FFF6FFF) lies where MEM1 has to be.
+    if(RE4_SANITIZE MATCHES "address")
+        set(san_lib asan)
+    else()
+        set(san_lib ubsan_standalone)
+    endif()
+    set(san_arch ${CMAKE_SYSTEM_PROCESSOR})
+    if(RE4_ARCH STREQUAL "i686")
+        set(san_arch i386)
+    elseif(RE4_ARCH STREQUAL "armv7")
+        set(san_arch armhf)
+    endif()
+    execute_process(COMMAND ${CMAKE_C_COMPILER} -print-file-name=libclang_rt.${san_lib}-${san_arch}.so
+        OUTPUT_VARIABLE san_path OUTPUT_STRIP_TRAILING_WHITESPACE)
+    set(san_gcc "${CMAKE_FIND_ROOT_PATH}/lib")
+    if(IS_ABSOLUTE "${san_path}")
+        get_filename_component(san_dir "${san_path}" DIRECTORY)
+        set(RE4_SANITIZE_LINK ${RE4_SANITIZE_FLAGS} -shared-libsan "-Wl,-rpath,${san_dir}")
+    elseif(NOT RE4_SANITIZE MATCHES "address" AND CMAKE_FIND_ROOT_PATH AND EXISTS "${san_gcc}/libubsan.so.1")
+        set(RE4_SANITIZE_LINK ${RE4_SANITIZE_FLAGS} -fno-sanitize-link-runtime "${san_gcc}/libubsan.so.1")
+    else()
+        message(FATAL_ERROR "RE4_SANITIZE=${RE4_SANITIZE}: libclang_rt.${san_lib}-${san_arch}.so not found "
+            "(clang's sanitizer runtime; on aarch64 only RE4_SANITIZE=undefined)")
+    endif()
+    add_link_options(${RE4_SANITIZE_LINK})
+endif()
 
 # --- prepared original sources -------------------------------------------------
 set(RE4_PREPARED "${CMAKE_CURRENT_BINARY_DIR}/prepared")
@@ -214,9 +274,18 @@ string(APPEND RE4_LINK_OBJECTS "runtime=$<TARGET_OBJECTS:re4_formats_obj>\n")
 # libre4_main: the per-frame state trace (RE4_TRACE), the snapshot of the
 # core bridge for the app's renderer (runtime/re4_core.h) and the depth of
 # field notes and gameplay autofocus (runtime/dof.cpp, patch 0065) and the
-# gyro aiming (runtime/gyro.cpp).
+# gyro aiming (runtime/gyro.cpp), the taps in the sub screens (runtime/menu_touch.cpp), the
+# picture format without the letterbox (runtime/picture.cpp), the knife by a swipe
+# (runtime/knife_swipe.cpp) and the quick-time events by a tap (runtime/qte_touch.cpp), and the instant save payload (runtime/instant_game.cpp),
+# the game language (runtime/game_language.cpp), the cheat menu (runtime/cheats.cpp) and the outline of the
+# app's minimap (runtime/minimap.cpp), the laser sight's colour (runtime/laser_colour.cpp), the benchmark
+# (runtime/benchmark.cpp) and the glows' test of the light itself (runtime/glow_check.cpp, patch 0213).
 add_library(re4_gamehooks_obj OBJECT runtime/state_trace.cpp runtime/core_bridge.cpp runtime/movie_status.cpp
-    runtime/dof.cpp runtime/gyro.cpp)
+    runtime/dof.cpp runtime/gyro.cpp runtime/menu_touch.cpp runtime/picture.cpp runtime/knife_swipe.cpp
+    runtime/qte_touch.cpp runtime/instant_game.cpp runtime/game_language.cpp runtime/cheats.cpp
+    runtime/gx_owner.cpp runtime/potato.cpp runtime/aim_options.cpp
+    runtime/sound_volume.cpp runtime/minimap.cpp runtime/laser_colour.cpp runtime/benchmark.cpp
+    runtime/glow_check.cpp)
 target_link_libraries(re4_gamehooks_obj PRIVATE re4_game_flags)
 target_include_directories(re4_gamehooks_obj PRIVATE runtime)
 string(APPEND RE4_LINK_OBJECTS "main=$<TARGET_OBJECTS:re4_gamehooks_obj>\n")
@@ -227,9 +296,15 @@ string(APPEND RE4_LINK_OBJECTS "main=$<TARGET_OBJECTS:re4_gamehooks_obj>\n")
 # (runtime/core_api.cpp, runtime/re4_core.h).
 add_library(re4_glue_obj OBJECT
     runtime/core_api.cpp
+    runtime/instant_store.cpp
     runtime/game_heap.cpp
     runtime/sn_runtime.cpp)
 target_include_directories(re4_glue_obj PRIVATE runtime)
+# the benchmark's place (runtime/instant_store.cpp re4_bench_place_payload): the project owner's instant save at
+# the lake's dock, built into libre4_main (.incbin)
+set(RE4_BENCH_PLACE "${CMAKE_CURRENT_SOURCE_DIR}/data/benchmark-place.ce4benchmark")
+target_compile_definitions(re4_glue_obj PRIVATE RE4_BENCH_PLACE=\"${RE4_BENCH_PLACE}\")
+set_source_files_properties(runtime/instant_store.cpp PROPERTIES OBJECT_DEPENDS "${RE4_BENCH_PLACE}")
 string(APPEND RE4_LINK_OBJECTS "runtime=$<TARGET_OBJECTS:re4_glue_obj>\n")
 
 # Portable C parts of the Dolphin SDK (src/lib), compiled unchanged: the heap
@@ -384,6 +459,10 @@ if(ANDROID)
     # their functions would be planned as stubs
     list(APPEND RE4_TARGET_FLAG -llog -ldl)
 endif()
+if(RE4_SANITIZE)
+    # likewise the sanitizer runtime (__asan_*, __ubsan_*)
+    list(APPEND RE4_TARGET_FLAG ${RE4_SANITIZE_LINK})
+endif()
 add_custom_command(
     OUTPUT "${RE4_GEN}/link_plan.stamp"
     BYPRODUCTS ${RE4_GEN_FILES}
@@ -486,10 +565,11 @@ target_link_libraries(re4test_rel PRIVATE re4_main)
 set_target_properties(re4test_rel PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/modules"
     OUTPUT_NAME re4_re4test_rel)
 
-# --- the core process on Android (armeabi-v7a) -------------------------------------
+# --- the core process on Android (armeabi-v7a, arm64-v8a) ---------------------------
 # A program in the app's library folder (named lib*.so so that the APK carries it):
-# the core runs in it when MEM1 is taken in the app's process (port/docs/32bit-kernprozess.md).
-if(ANDROID AND CMAKE_SIZEOF_VOID_P EQUAL 4)
+# the core runs in it when MEM1 is taken in the app's process (port/docs/32bit-kernprozess.md;
+# on 64 bit since 31.10.2026, ART's moving heap on MEM1).
+if(ANDROID)
     add_executable(re4_coreproc host/coreproc.cpp runtime/core_ipc.cpp)
     target_include_directories(re4_coreproc PRIVATE runtime)
     target_compile_features(re4_coreproc PRIVATE cxx_std_17)
@@ -503,9 +583,13 @@ endif()
 # loads libre4_host.so (the launcher and the runtime tests) and with it the
 # game libraries, which therefore lie above 0x80000000 as on Android.
 if(NOT ANDROID)
+    add_executable(re4_instant_store_test tests/instant_store_test.cpp runtime/instant_store.cpp runtime/gci.cpp)
+    target_include_directories(re4_instant_store_test PRIVATE runtime)
+    target_compile_definitions(re4_instant_store_test PRIVATE RE4_BENCH_PLACE=\"${RE4_BENCH_PLACE}\")
+    target_compile_features(re4_instant_store_test PRIVATE cxx_std_17)
     # tests/game_probe.cpp: checks that need the game's flags and headers
     add_library(re4_probe_obj OBJECT tests/game_probe.cpp tests/core_probe.cpp tests/stream_probe.cpp
-        tests/gx_probe.cpp tests/movie_probe.cpp tests/card_probe.cpp)
+        tests/gx_probe.cpp tests/movie_probe.cpp tests/card_probe.cpp tests/instant_game_probe.cpp)
     target_link_libraries(re4_probe_obj PRIVATE re4_game_flags)
     add_library(re4_hostlib SHARED host/main.cpp tests/runtime_tests.cpp tests/core_tests.cpp
         tests/core_remote_probe.cpp
@@ -531,8 +615,11 @@ if(NOT ANDROID)
     # the core in a process of its own (port/docs/32bit-kernprozess.md), 32 bit as on
     # Android: re4_coreproc (host/coreproc.cpp, on Android libre4_coreproc.so) and the
     # app's side against it (re4_core_remote_test, the client of core_mode.cpp)
-    if(CMAKE_SIZEOF_VOID_P EQUAL 4)
+    if(CMAKE_SIZEOF_VOID_P EQUAL 4 OR RE4_ARCH STREQUAL "arm64")
         add_executable(re4_coreproc host/coreproc.cpp runtime/core_ipc.cpp)
+        if(RE4_ARCH STREQUAL "arm64")
+            target_sources(re4_coreproc PRIVATE host/high_memory_coreproc.c)
+        endif()
         add_dependencies(re4_coreproc re4_main re4_hostlib)
         add_executable(re4_core_remote_test tests/core_remote_test.cpp runtime/core_ipc.cpp
             runtime/core_ipc_client.cpp)

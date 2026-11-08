@@ -55,7 +55,9 @@ extern "C" void re4probe_shape_restore(void);
 extern "C" int re4probe_ax_test(void);
 extern "C" int re4probe_axfx_test(void);
 extern "C" int re4probe_movie_test(void);
+extern "C" int re4_formats_entry_status(const void* entry);
 extern "C" int re4probe_card_test(void);
+extern "C" int re4probe_instant_game_test(void);
 
 namespace {
 
@@ -491,6 +493,11 @@ void testBridge()
         unsigned char* mem = (unsigned char*) (unsigned long) 0x82500000u;
         memset(mem, 0, 0x4000);
         re4probe_shape_setup(mem);
+        re4_bridge_capture(&gSnap);  // without the bridge view: no shapes
+        for (unsigned i = 0; i < gSnap.nModels; i++) {
+            CHECK(gSnap.models[i].address != 0x82500000u || gSnap.nMorph == 0);
+        }
+        re4_bridge_shapes(1);
         re4_bridge_capture(&gSnap);
         re4probe_shape_restore();
         bool found = false;
@@ -520,6 +527,7 @@ void testBridge()
         const unsigned behind[2] = { 0x10, 1 };
         memcpy(mem + 0x3600 + 3 * 8, behind, sizeof(behind));
         re4_bridge_capture(&gSnap);
+        re4_bridge_shapes(0);
         re4probe_shape_restore();
         found = false;
         for (unsigned i = 0; i < gSnap.nModels && !found; i++) {
@@ -788,6 +796,112 @@ void testEvent()
     report("event", ok);
 }
 
+// Empty tables the game never reads (the room tour, 22.10.2026): an event bundle without events
+// whose table offset is the tools' fill 0xCDCDCDCD (EventMgr::SetEvs; r101, r111, r400 ...) and an
+// item pack without items whose BIN and TPL table offsets are 0 (cItmSys::DataLoad; r215). The
+// converters stopped at the tables and left both entries big-endian; both count as converted now.
+void testEmptyTables()
+{
+    bool ok = true;
+    unsigned char* arc = (unsigned char*) (unsigned long) 0x82340000u;
+    memset(arc, 0, 0x100);
+    put32be(arc + 0x00, 2);
+    put32be(arc + 0x10, 0x20);
+    put32be(arc + 0x14, 0x40);
+    memcpy(arc + 0x18, "EVS\0", 4);
+    memcpy(arc + 0x1C, "ITM\0", 4);
+    put32be(arc + 0x24, 0xCDCDCDCDu);  // EVS: no events, the table offset is fill
+    unsigned char* itm = arc + 0x40;
+    put32be(itm + 0x00, 3);
+    put32be(itm + 0x04, 0x10);  // the id table: no ids
+    Header h = { 0, 0x80, 0, 0, 0, 0, 0, 0 };
+    re4_formats_part_loaded("em/empty.das", 0, 0, &h, 0x82340000u);
+    CHECK(re4_formats_entry_status(arc + 0x20) == 1);
+    CHECK(re4_formats_entry_status(itm) == 1);
+    CHECK(get32(itm) == 3 && get32(itm + 4) == 0x10 && get32(itm + 8) == 0);
+    report("empty tables", ok);
+}
+
+// The European discs' sub screen texts (ss/<lang>/*.dat, retail-eu-plan.md R7): an MDT entry that
+// is a single message block (x0, count, offsets from 8 + 4 * count, u16 codes) without the
+// six-language header. Turned as one block (formats_mes.cpp, patch 0122); a six-language table
+// beside it as before.
+void testOneLanguageMdt()
+{
+    bool ok = true;
+    unsigned char* arc = (unsigned char*) (unsigned long) 0x82360000u;
+    memset(arc, 0, 0x100);
+    put32be(arc + 0x00, 2);
+    put32be(arc + 0x10, 0x20);
+    put32be(arc + 0x14, 0x40);
+    memcpy(arc + 0x18, "MDT\0", 4);
+    memcpy(arc + 0x1C, "MDT\0", 4);
+    unsigned char* one = arc + 0x20;  // two messages
+    put32be(one + 0x00, 0);
+    put32be(one + 0x04, 2);
+    put32be(one + 0x08, 0x10);
+    put32be(one + 0x0C, 0x14);
+    put32be(one + 0x10, 0x01020304u);
+    put32be(one + 0x14, 0x05060708u);
+    unsigned char* six = arc + 0x40;  // six languages, all on one block of one message
+    put32be(six, 6);
+    for (int k = 1; k <= 6; k++) {
+        put32be(six + k * 4, 0x1C);
+    }
+    put32be(six + 0x1C, 0);
+    put32be(six + 0x20, 1);
+    put32be(six + 0x24, 0xC);
+    put32be(six + 0x28, 0x0A0B0C0Du);
+    Header h = { 0, 0x80, 0, 0, 0, 0, 0, 0 };
+    re4_formats_part_loaded("ss/ger/ss_test.dat", 0, 0, &h, 0x82360000u);
+    unsigned short code[4];
+    memcpy(code, one + 0x10, 8);
+    CHECK(get32(one) == 0 && get32(one + 4) == 2 && get32(one + 8) == 0x10 && get32(one + 0xC) == 0x14);
+    CHECK(code[0] == 0x0102 && code[1] == 0x0304 && code[2] == 0x0506 && code[3] == 0x0708);
+    memcpy(code, six + 0x28, 4);
+    CHECK(get32(six) == 6 && get32(six + 4) == 0x1C && get32(six + 0x20) == 1 && get32(six + 0x24) == 0xC);
+    CHECK(code[0] == 0x0A0B && code[1] == 0x0C0D);
+    report("one-language mdt", ok);
+}
+
+// An effect model whose motion slot holds a texture with its zero bytes stored as 0x20, as r10b's
+// effect model 0x7c (st1/r10b.das #7, the room tour 22.10.2026): EFF version 0xB with one effect
+// model (id 0x7c, motion table of one entry). The motion converter read 175 joints from it and
+// stopped; the entry counts as converted now, the texture stays as it is.
+void testEffectTextureMotion()
+{
+    bool ok = true;
+    unsigned char* arc = (unsigned char*) (unsigned long) 0x82350000u;
+    memset(arc, 0, 0x100);
+    put32be(arc + 0x00, 1);
+    put32be(arc + 0x10, 0x20);
+    memcpy(arc + 0x14, "EFF", 4);
+    unsigned char* eff = arc + 0x20;
+    put32be(eff + 0x00, 0xB);
+    put32be(eff + 0x14, 0x30);  // effect model ids
+    put32be(eff + 0x2C, 0x40);  // effect models
+    put32be(eff + 0x30, 1);
+    put16be(eff + 0x34, 0x7C);
+    put32be(eff + 0x40, 1);
+    put32be(eff + 0x44, 0x10);  // the model entry at 0x50
+    unsigned char* efm = eff + 0x50;
+    put32be(efm + 0x00, 4);
+    put32be(efm + 0x0C, 0x20);  // motion table at 0x70
+    put32be(efm + 0x20, 1);
+    put32be(efm + 0x24, 0x10);  // "motion" 0 at 0x80
+    unsigned char* tex = efm + 0x30;
+    memset(tex, 0x20, 0x40);
+    put32be(tex + 0x00, 0x2020AF30u);  // TPL magic, zeros as 0x20
+    put32be(tex + 0x04, 0x20202001u);
+    put32be(tex + 0x08, 0x2020200Cu);
+    Header h = { 0, 0xE0, 0, 0, 0, 0, 0, 0 };
+    re4_formats_part_loaded("em/efm.das", 0, 0, &h, 0x82350000u);
+    CHECK(re4_formats_entry_status(eff) == 1);
+    CHECK(get32(eff) == 0xB && get32(efm + 0x0C) == 0x20 && get32(efm + 0x20) == 1 && get32(efm + 0x24) == 0x10);
+    CHECK(tex[0] == 0x20 && tex[1] == 0x20 && tex[2] == 0xAF && tex[3] == 0x30);
+    report("effect texture motion", ok);
+}
+
 // A model (BIN, version 0x20010801) with four vertices and a shape table of
 // two shapes that name the same delta list (vertex 2: +0x74, -1, +3).
 void testMorph()
@@ -958,6 +1072,53 @@ void testPad()
     PADRead(pads);
     PADRead(pads);
     CHECK((re4_core_rumble() & 0xF) == 0);
+    // the live controller (the app): every press reaches the game as a press of its own, also a
+    // fast mash where the button is let go and pressed again between two reads (r226, 25.10.2026)
+    {
+        Re4CorePad live;
+        memset(&live, 0, sizeof(live));
+        auto read = [&]() {
+            PadStatus p[4];
+            PADRead(p);
+            return p[0].button;
+        };
+        re4_core_pad(&live);
+        read();
+        live.buttons = 0x0100;
+        re4_core_pad(&live);
+        CHECK(read() == 0x0100);  // pressed
+        live.buttons = 0;
+        re4_core_pad(&live);
+        live.buttons = 0x0100;
+        re4_core_pad(&live);       // let go and pressed again before the next read
+        CHECK(read() == 0);        // a frame off ...
+        CHECK(read() == 0x0100);   // ... then the second press
+        CHECK(read() == 0x0100);   // held
+        live.buttons = 0;
+        re4_core_pad(&live);
+        live.buttons = 0x0100;
+        re4_core_pad(&live);
+        live.buttons = 0;
+        re4_core_pad(&live);       // a tap shorter than a frame
+        CHECK(read() == 0);        // (held at the read before: off first)
+        CHECK(read() == 0x0100);   // the tap
+        CHECK(read() == 0);
+        live.triggerL = 200;
+        live.buttons = 0x0040;
+        re4_core_pad(&live);
+        read();
+        live.buttons = 0;
+        live.triggerL = 0;
+        re4_core_pad(&live);
+        live.buttons = 0x0040;
+        live.triggerL = 200;
+        re4_core_pad(&live);
+        PadStatus p[4];
+        PADRead(p);
+        CHECK(p[0].button == 0 && p[0].triggerLeft == 0);  // L off with its trigger value
+        CHECK(read() == 0x0040);
+        re4_core_pad(nullptr);
+    }
     report("pad", ok);
 }
 
@@ -998,6 +1159,12 @@ void testPause()
     CHECK(gPauseFrames == 0);  // stands in its first PADRead
     CHECK(re4_core_card_list(files, 4) == 0);
     CHECK(re4_core_card_free_blocks() == 251);
+    Re4InstantInfo instant = {};
+    const int slot = re4_core_instant(RE4_INSTANT_STATUS, &instant);
+    CHECK(slot == RE4_INSTANT_OK || slot == RE4_INSTANT_BAD || slot == RE4_INSTANT_IO);
+    CHECK(instant.canSave == 0 && instant.canLoad == 0); // synthetic state is not playable
+    CHECK(re4_core_instant(RE4_INSTANT_SAVE, &instant) == RE4_INSTANT_BUSY);
+    CHECK(gPauseFrames == 0); // commands were serviced without advancing the game
     char note[128];
     unsigned char out[64];
     CHECK(re4_core_card_export(0, out, sizeof(out), note, sizeof(note)) == RE4_CARD_NOFILE);
@@ -1006,12 +1173,19 @@ void testPause()
     CHECK(gPauseFrames == 3);
     CHECK(re4_core_pause(0, 0) == 0);
     CHECK(re4_core_card_free_blocks() == RE4_CARD_BUSY);
+    CHECK(re4_core_instant(RE4_INSTANT_STATUS, &instant) == RE4_INSTANT_BUSY);
     // the menu's depth of field switch (patch 0065 reads it)
     CHECK(re4_dof_enabled() == 1);
     re4_core_set_dof(0);
     CHECK(re4_dof_enabled() == 0);
     re4_core_set_dof(1);
     CHECK(re4_dof_enabled() == 1);
+    // the picture format "4:3 without bars" (patch 0105 reads it)
+    CHECK(re4_letterbox_off() == 0);
+    re4_core_set_letterbox(1);
+    CHECK(re4_letterbox_off() == 1);
+    re4_core_set_letterbox(0);
+    CHECK(re4_letterbox_off() == 0);
     // SELECT held: the debug menu at the next frame, once
     CHECK(re4_debug_menu_request() == 0);
     re4_core_debug_menu();
@@ -1020,6 +1194,148 @@ void testPause()
     re4_memcard_open(0);
     unlink(path);
     report("pause", ok);
+}
+
+// GXPeekZ answers from the depth map the renderer hands over (runtime/gx_fifo.cpp) with the number of
+// the picture that peeked: far without any map, the cell of the pixel (half the EFB's resolution) from
+// a map at most 8 pictures old, "in front" from an older one (the peeks start when a torch comes into
+// view: the glow waits for the new map instead of flashing through the wall, Retroid 26.10.2026), and
+// far again when no fresh map comes for 60 peeking pictures. Maps the renderer leaves out (the GPU
+// behind, a renderer made anew when the resolution changes) do not add up: the next map counts again.
+extern "C" unsigned int re4_gx_efb_peek(unsigned short x, unsigned short y, int z);
+
+void testPeekDepth()
+{
+    bool ok = true;
+    static unsigned cells[RE4_GX_DEPTH_W * RE4_GX_DEPTH_H];
+    unsigned answered0, far0, marked0, answered, far, marked;
+    re4_gx_peek_stats(&answered0, &far0, &marked0);
+    re4_gx_peek_new_frame();
+    CHECK(re4_gx_efb_peek(100, 60, 1) == 0x00FFFFFF);  // no map yet: far, as before
+    CHECK(re4_gx_efb_peek(100, 60, 0) == 0);           // colour: black
+    re4_gx_peek_stats(&answered, &far, &marked);
+    CHECK(marked == marked0 + 1 && far == far0 + 1);   // the picture's first peek marked it, once
+    CHECK(re4_gx_efb_peek(101, 61, 1) == 0x00FFFFFF);
+    re4_gx_peek_stats(&answered, &far, &marked);
+    CHECK(marked == marked0 + 1);
+    cells[(60 >> 1) * RE4_GX_DEPTH_W + (100 >> 1)] = 0x123456;
+    cells[(RE4_GX_DEPTH_H - 1) * RE4_GX_DEPTH_W + RE4_GX_DEPTH_W - 1] = 0xFF00ABCD;  // only 24 bits count
+    // the map of this picture, handed over a picture later
+    re4_core_gx_depth(cells, re4_gx_peek_picture());
+    re4_gx_peek_new_frame();
+    CHECK(re4_gx_efb_peek(100, 60, 1) == 0x123456);
+    CHECK(re4_gx_efb_peek(101, 61, 1) == 0x123456);  // the 2 x 2 pixels of a cell
+    CHECK(re4_gx_efb_peek(639, 527, 1) == 0x00ABCD);
+    CHECK(re4_gx_efb_peek(2000, 2000, 1) == 0x00ABCD);  // beyond the EFB: the last cell
+    CHECK(re4_gx_efb_peek(0, 0, 1) == 0);               // a cell the renderer drew nothing in (0)
+    re4_gx_peek_stats(&answered, &far, &marked);
+    CHECK(answered == answered0 + 5);
+    // 8 pictures old: still answers
+    for (int i = 0; i < 7; i++) {
+        re4_gx_peek_new_frame();
+    }
+    CHECK(re4_gx_efb_peek(100, 60, 1) == 0x123456);
+    // older (the torch comes back into view after a while): in front, not far
+    const unsigned hidden0 = re4_gx_peek_hidden();
+    re4_gx_peek_new_frame();
+    CHECK(re4_gx_efb_peek(100, 60, 1) == 0);
+    CHECK(re4_gx_peek_hidden() == hidden0 + 1);
+    // the renderer left maps out (a new renderer after a change of the resolution): the next map counts
+    for (int i = 0; i < 30; i++) {
+        re4_gx_peek_new_frame();
+        re4_gx_efb_peek(100, 60, 1);
+    }
+    re4_core_gx_depth(cells, re4_gx_peek_picture() - 1);
+    re4_gx_peek_new_frame();
+    CHECK(re4_gx_efb_peek(100, 60, 1) == 0x123456);
+    // no fresh map for more than 60 peeking pictures: far, as without maps
+    for (int i = 0; i < 70; i++) {
+        re4_gx_peek_new_frame();
+        re4_gx_efb_peek(100, 60, 1);
+    }
+    CHECK(re4_gx_efb_peek(100, 60, 1) == 0x00FFFFFF);
+    re4_core_gx_depth(cells, re4_gx_peek_picture());  // it delivers again
+    CHECK(re4_gx_efb_peek(100, 60, 1) == 0x123456);
+    report("peek depth", ok);
+}
+
+// A glow's light itself behind something (patch 0213, runtime/glow_check.cpp): hidden when the depth at its screen
+// position lies more than 1 m in front of it (Leon's head 4.5 m before the r102 lantern), not for the lamp's own glass
+// 0.5 m before it, a wall behind it, off the picture or with the light within 1 m of the camera.
+extern "C" int re4_glow_center_hidden_at(float sx, float sy, float viewZ, float width, float height, float margin,
+                                         float znear, float zfar);
+
+void testGlowCentre()
+{
+    bool ok = true;
+    static unsigned cells[RE4_GX_DEPTH_W * RE4_GX_DEPTH_H];
+    const float znear = 100.0f, zfar = 1000000.0f;
+    // the 24-bit GX depth of a point `d` units in front of the camera (the game's projection)
+    auto depth = [&](float d) {
+        const float z = -d, inv = 1.0f / (zfar - znear);
+        return (unsigned) ((((-(zfar * znear) * inv) + (-znear * inv) * z) / -z + 1.0f) * 16777215.0f);
+    };
+    const int x = 193, y = 172;
+    auto deliver = [&](float d) {
+        cells[(y >> 1) * RE4_GX_DEPTH_W + (x >> 1)] = depth(d);
+        re4_gx_peek_new_frame();
+        re4_core_gx_depth(cells, re4_gx_peek_picture());
+        re4_gx_peek_new_frame();
+    };
+    deliver(1500.0f);  // Leon's head before the lantern 6 m away
+    CHECK(re4_glow_center_hidden_at(193.0f, 172.8f, -6000.0f, 512.0f, 448.0f, 0.0f, znear, zfar) == 1);
+    CHECK(re4_glow_center_hidden_at(193.0f, 172.8f, -6000.0f, 512.0f, 448.0f, 200.0f, znear, zfar) == 0);  // margin
+    CHECK(re4_glow_center_hidden_at(600.0f, 172.8f, -6000.0f, 512.0f, 448.0f, 0.0f, znear, zfar) == 0);    // off
+    CHECK(re4_glow_center_hidden_at(193.0f, 172.8f, -900.0f, 512.0f, 448.0f, 0.0f, znear, zfar) == 0);     // near
+    deliver(5500.0f);  // the lamp's own glass, 0.5 m before the light
+    CHECK(re4_glow_center_hidden_at(193.0f, 172.8f, -6000.0f, 512.0f, 448.0f, 0.0f, znear, zfar) == 0);
+    deliver(8000.0f);  // the wall behind the light
+    CHECK(re4_glow_center_hidden_at(193.0f, 172.8f, -6000.0f, 512.0f, 448.0f, 0.0f, znear, zfar) == 0);
+    deliver(4900.0f);  // 1.1 m before it
+    CHECK(re4_glow_center_hidden_at(193.0f, 172.8f, -6000.0f, 512.0f, 448.0f, 0.0f, znear, zfar) == 1);
+    report("glow centre", ok);
+}
+
+// The picture format "Native" (patch 0214, runtime/picture.cpp): the aspect of a projection matrix (the original's
+// 4:3 constant exactly for a 4:3 one and for no perspective, a wider one as it is), the flat layer's edges and the
+// camera's aspect outside a wide picture (as the original), the switch on and off.
+extern "C" float re4_view_mtx_aspect(const float (*m)[4]);
+extern "C" float re4_view_flat_edge(float width, int right);
+extern "C" float re4_view_aspect(void);
+extern "C" void re4_core_set_view_aspect(int aspect_e4);
+
+void testNativeAspect()
+{
+    bool ok = true;
+    auto perspective = [](float m[4][4], float fovy, float aspect) {
+        memset(m, 0, sizeof(float) * 16);
+        const float cot = 1.0f / tanf(fovy * 0.5f * 3.14159265f / 180.0f);
+        m[0][0] = cot / aspect;
+        m[1][1] = cot;
+        m[2][2] = -0.0001f;
+        m[2][3] = -100.0f;
+        m[3][2] = -1.0f;
+    };
+    float m[4][4];
+    perspective(m, 50.0f, 1.3333334f);
+    CHECK(re4_view_mtx_aspect(m) == 1.3333334f);
+    perspective(m, 37.5f, 4.0f / 3.0f);
+    CHECK(re4_view_mtx_aspect(m) == 1.3333334f);
+    perspective(m, 50.0f, 1.6667f);
+    CHECK(fabsf(re4_view_mtx_aspect(m) - 1.6667f) < 1e-4f);
+    perspective(m, 50.0f, 1.0f);  // a light's square view: not wider
+    CHECK(re4_view_mtx_aspect(m) == 1.3333334f);
+    m[3][2] = 0.0f;  // no perspective (an orthographic projection)
+    m[3][3] = 1.0f;
+    CHECK(re4_view_mtx_aspect(m) == 1.3333334f);
+    CHECK(re4_view_mtx_aspect(nullptr) == 1.3333334f);
+    re4_core_set_view_aspect(16667);
+    // no game frame of play has been latched here: the camera's projection stays the game's 4:3
+    CHECK(re4_view_aspect() == 1.3333334f);
+    CHECK(re4_view_flat_edge(512.0f, 0) == 0.0f && re4_view_flat_edge(512.0f, 1) == 512.0f);
+    re4_core_set_view_aspect(0);
+    CHECK(re4_view_aspect() == 1.3333334f);
+    report("native aspect", ok);
 }
 
 }  // namespace
@@ -1036,6 +1352,9 @@ int re4_core_tests()
     testSound();
     testCamera();
     testEvent();
+    testEmptyTables();
+    testOneLanguageMdt();
+    testEffectTextureMotion();
     testMorph();
     {
         int failed = re4probe_ax_test();
@@ -1061,7 +1380,15 @@ int re4_core_tests()
         gFailures += failed;
         report("card", failed == 0);
     }
+    {
+        int failed = re4probe_instant_game_test();
+        gFailures += failed;
+        report("instant-game", failed == 0);
+    }
     testPause();
+    testPeekDepth();
+    testGlowCentre();
+    testNativeAspect();
     re4_log("core-test: %d failed", gFailures);
     return gFailures;
 }

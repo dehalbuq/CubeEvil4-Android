@@ -1,0 +1,160 @@
+name: R36S 0.99.5 experimental GX + AArch64 native IPC
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/r36s-linux-frontend.yml"
+      - "port/r36s/**"
+      - "port/whole/**"
+      - "port/android-decomp/app/src/main/cpp/gx_*.cpp"
+      - "port/android-decomp/app/src/main/cpp/gx_*.h"
+  pull_request:
+    paths:
+      - ".github/workflows/r36s-linux-frontend.yml"
+      - "port/r36s/**"
+      - "port/whole/**"
+
+permissions:
+  contents: read
+
+jobs:
+  linux-host-gx-compile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install host SDL2 and EGL/GLES development packages
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y cmake ninja-build libsdl2-dev libgles-dev libegl-dev libgl1-mesa-dri xvfb
+      - name: Compile 0.99.5 GLES3 GX backend against SDL2
+        run: |
+          cmake -S port/r36s -B /tmp/re4-host -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build /tmp/re4-host --parallel 2
+      - name: Software-EGL smoke test, not R36S hardware validation
+        run: |
+          xvfb-run -a env LIBGL_ALWAYS_SOFTWARE=1 RE4_R36S_LOW_MEM=1 /tmp/re4-host/re4_r36s --probe --windowed
+
+  linux-arm64-gx:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install native ARM64 SDL2 and GLES3 build prerequisites
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y cmake ninja-build pkg-config libsdl2-dev libgles-dev libegl-dev
+      - name: Build updated GX hardware probe
+        run: |
+          cmake -S port/r36s -B /tmp/re4-r36s-native -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build /tmp/re4-r36s-native --parallel 2
+          readelf -h /tmp/re4-r36s-native/re4_r36s | grep -E 'Machine:.*AArch64'
+      - name: Build recovered IPC frontend and physical-button reader
+        run: |
+          cmake -S port/r36s/gx-host -B /tmp/re4-r36s-ipc -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build /tmp/re4-r36s-ipc --target r36s_game_showcase_evdev_exit r36s_showcase_input_probe --parallel 2
+          readelf -h /tmp/re4-r36s-ipc/r36s_game_showcase_evdev_exit | grep -E 'Machine:.*AArch64'
+          readelf -h /tmp/re4-r36s-ipc/r36s_showcase_input_probe | grep -E 'Machine:.*AArch64'
+      - name: Physical exit mapping and gesture regression tests
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror -I port/r36s/gx-host \
+            port/r36s/gx-host/test_showcase_evdev_exit.cpp -o /tmp/test_showcase_evdev_exit
+          /tmp/test_showcase_evdev_exit
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror $(pkg-config --cflags sdl2) \
+            -I port/r36s/gx-host port/r36s/gx-host/test_showcase_exit_controls.cpp \
+            -o /tmp/test_showcase_exit_controls $(pkg-config --libs sdl2)
+          /tmp/test_showcase_exit_controls
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror -I port/r36s/gx-host \
+            port/r36s/gx-host/test_showcase_clean_data.cpp -o /tmp/test_showcase_clean_data
+          /tmp/test_showcase_clean_data
+      - name: Collect native ARM64 frontend files
+        run: |
+          mkdir -p artifact/frontend
+          cp /tmp/re4-r36s-native/re4_r36s artifact/frontend/
+          cp /tmp/re4-r36s-ipc/r36s_game_showcase_evdev_exit artifact/frontend/
+          cp /tmp/re4-r36s-ipc/r36s_showcase_input_probe artifact/frontend/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r36s-0995-native-arm64-frontends
+          path: artifact/frontend/
+          if-no-files-found: error
+          retention-days: 14
+
+  linux-arm64-core:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      RE4_JOBS: "2"
+      RE4_OPT: "2"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install official Linux cross-compilation prerequisites
+        run: |
+          sudo bash port/tools/whole_setup_linux.sh
+      - name: Build updated whole-program AArch64 core and separate IPC server
+        shell: bash
+        run: |
+          set -o pipefail
+          bash port/tools/whole_build.sh aarch64 2>&1 | tee r36s-0995-core-build.log
+      - name: Collect complete matching core (no original disc content)
+        run: |
+          set -euo pipefail
+          BUILD="port/build/whole-aarch64-O2"
+          mkdir -p artifact/core/modules artifact/core/logs
+          cp r36s-0995-core-build.log artifact/core/logs/
+          for name in re4_coreproc libre4_main.so libre4_platform.so libre4_host.so; do
+            test -s "$BUILD/$name"
+            cp "$BUILD/$name" artifact/core/
+          done
+          find "$BUILD/modules" -maxdepth 1 -name 'libre4_*.so' -type f -exec cp {} artifact/core/modules/ \;
+          test "$(find artifact/core/modules -type f -name 'libre4_*.so' | wc -l)" -ge 114
+          readelf -h artifact/core/re4_coreproc | grep -E 'Machine:.*AArch64'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r36s-0995-matching-arm64-core
+          path: artifact/core/
+          if-no-files-found: error
+          retention-days: 14
+
+  assemble-test-package:
+    needs: [linux-arm64-gx, linux-arm64-core]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: r36s-0995-native-arm64-frontends
+          path: /tmp/re4-frontends
+      - uses: actions/download-artifact@v4
+        with:
+          name: r36s-0995-matching-arm64-core
+          path: /tmp/re4-core
+      - name: Assemble isolated experimental PortMaster-style directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="dist/cubeevil4_0995_exp"
+          mkdir -p "$OUT/modules" "$OUT/logs"
+          cp /tmp/re4-frontends/{re4_r36s,r36s_game_showcase_evdev_exit,r36s_showcase_input_probe} "$OUT/"
+          cp /tmp/re4-core/{re4_coreproc,libre4_main.so,libre4_platform.so,libre4_host.so} "$OUT/"
+          cp /tmp/re4-core/modules/libre4_*.so "$OUT/modules/"
+          cp port/r36s/launch-r36s.sh "$OUT/"
+          cp port/r36s/README.md "$OUT/README-R36S.txt"
+          chmod +x "$OUT/re4_r36s" "$OUT/re4_coreproc" \
+              "$OUT/r36s_game_showcase_evdev_exit" "$OUT/r36s_showcase_input_probe" "$OUT/launch-r36s.sh"
+          cat > dist/RE4-R36S-0995-EXPERIMENTAL.sh <<'SH'
+          #!/bin/sh
+          HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+          exec sh "$HERE/cubeevil4_0995_exp/launch-r36s.sh" "$@"
+          SH
+          chmod +x dist/RE4-R36S-0995-EXPERIMENTAL.sh
+          test ! -e "$OUT/data"
+          echo "No game disc or save files are included; use legal game files you own." > "$OUT/ORIGINAL-GAME-FILES-NOT-INCLUDED.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CubeEvil4-R36S-0995-EXPERIMENTAL-ARM64
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14

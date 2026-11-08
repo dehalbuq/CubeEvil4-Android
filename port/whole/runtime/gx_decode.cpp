@@ -25,6 +25,7 @@
 //     (colours, u8/s8 data) are the same either way;
 //   - texels and palette entries stay big-endian (the renderer decodes them).
 #include "gx_internal.h"
+#include "re4_cpu_info.h"
 #include "re4_gx_frame.h"
 #include "re4_runtime.h"
 
@@ -34,9 +35,13 @@
 #include <condition_variable>
 #include <deque>
 #include <mutex>
+#include <pthread.h>
+#include <stdlib.h>
+#include <thread>
 #include <stdio.h>
 #include <string.h>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -194,10 +199,36 @@ u32 gCopySerial;
 
 // --- chunks -------------------------------------------------------------------
 
+// An allocator whose resize leaves new elements as they are: the vertex and index bytes of a
+// draw are all written by its conversion (convertVertices clears its own vertices first, on the
+// thread that converts them; the core thread clearing them made every cache line change cores).
+template <typename T>
+struct NoInit : std::allocator<T> {
+    template <typename U>
+    struct rebind {
+        typedef NoInit<U> other;
+    };
+    NoInit() = default;
+    template <typename U>
+    NoInit(const NoInit<U>&)
+    {
+    }
+    template <typename U>
+    void construct(U* p)
+    {
+        ::new ((void*) p) U;
+    }
+    template <typename U, typename... A>
+    void construct(U* p, A&&... a)
+    {
+        ::new ((void*) p) U(std::forward<A>(a)...);
+    }
+};
+
 struct Chunk {
     std::vector<u32> ops;
-    std::vector<u8> vertices;
-    std::vector<u16> indices;
+    std::vector<u8, NoInit<u8>> vertices;
+    std::vector<u16, NoInit<u16>> indices;
     std::vector<u8> blob;
     Re4GxChunk view;
     // ops.size() right after the last draw record (0: none); a draw that
@@ -235,6 +266,11 @@ int gCurrent = -1;  // slot being filled (core thread); -1: not recording
 int gPending = -1;  // slot waiting for the game's VIFlush (kPending); -1: none
 u32 gViNext;        // physical address of the XFB the VI shows next (0: never set)
 bool gViBlack;      // the VI outputs black (VISetBlack, from VIFlush on): RE4_GX_CHUNK_BLACK
+std::atomic<bool> gStill(false);  // a menu screen of the game (re4_gx_still): RE4_GX_CHUNK_STILL
+std::atomic<bool> gMovie(false);  // a movie plays (re4_gx_movie): RE4_GX_CHUNK_MOVIE
+// the picture format "Native" (re4_gx_wide): the first load of the camera's projection in this chunk was the wide
+// one (1), the game's 4:3 (0), none yet (-1): RE4_GX_CHUNK_WIDE
+std::atomic<int> gWide(-1);
 u32 gSequence;
 bool gNeedReset = true;
 
@@ -275,6 +311,12 @@ long long nowMs()
 {
     using namespace std::chrono;
     return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+}
+
+long long nowNs()
+{
+    using namespace std::chrono;
+    return duration_cast<nanoseconds>(steady_clock::now().time_since_epoch()).count();
 }
 
 Chunk* chunk()
@@ -446,6 +488,107 @@ void dropQueueLocked()
     gNeedReset = true;
 }
 
+// The vertex jobs (draw(), further down): workers started (-1: not decided yet), whether draws
+// become jobs (RE4_GX_THREADS, re4_gx_threads), and since the last "GX core" line the draws
+// handed out as batches and the draws converted at once.
+int gWorkers = -1;
+bool gJobsOn;
+u32 gJobCount, gJobInline;
+std::atomic<u32> gJobMicros(0);  // the time the batches took (any thread)
+std::atomic<int> gWorkerTids[8];   // the workers' thread ids, each as it starts (performance hint)
+std::atomic<int> gWorkerTidCount(0);
+
+// The game thread off the slowest cores and Android's performance hint for it and the vertex
+// threads (decision of the project owner, 23.10.2026; re4_cpu_info.h), since 24.10.2026 only with
+// the app menu's "Force Performance: Use performance cores" (re4_core_set_fast_cores; the default
+// "Default" leaves the threads to Android: cooler, slower on some phones). The threads are known at
+// the first chunk after the workers started; a change of the setting takes effect at the next
+// chunk. While on: after each chunk the game thread's work since the chunk before (without its
+// sleep for the retrace and its wait for the renderer) against 33.3 ms, and about once a second
+// back on the fast cores if Android moved the thread (realme reports 24.10.2026).
+re4cpu::PerfHint gHint;
+int gHintState;                       // 0 the threads not known yet, 1 known
+int gHintTids[9], gHintTidCount;
+std::atomic<int> gFastWanted(0);      // the menu's setting (any thread)
+int gFastNow = -1;                    // the setting the threads run with (-1: none yet)
+long long gHintFrom, gHintIdle, gHintWait;  // ns: the chunk before, re4_idle_ns() then, the wait since
+int gSlowHelpers;                     // the vertex threads put on the slow cores (gHintTids[1..])
+cpu_set_t gSlowSet;                   // their cores
+
+void hintChunk()
+{
+    const long long now = nowNs(), idle = re4_idle_ns();
+    if (gHintState == 0) {
+        if (gWorkers < 0) {
+            return;
+        }
+        int n = 0;
+        gHintTids[n++] = re4cpu::ThreadId();
+        for (int i = 0; i < (gJobsOn ? gWorkers : 0); i++) {
+            const int tid = gWorkerTids[i].load();
+            if (!tid) {
+                return;  // a worker not running yet: at the next chunk
+            }
+            gHintTids[n++] = tid;
+        }
+        gHintTidCount = n;
+        gHintState = 1;
+    }
+    const int fast = gFastWanted.load() ? 1 : 0;
+    if (fast != gFastNow) {
+        const bool first = gFastNow < 0;
+        gFastNow = fast;
+        if (fast) {
+            char cores[160];
+            re4cpu::KeepOffSlowCores(cores, sizeof(cores), re4cpu::kGameThread);
+            re4_log("cores: the game thread %s", cores);
+            // with only two fast cores the vertex threads on the slow ones (re4_cpu_info.h)
+            gSlowHelpers = 0;
+            for (int i = 1; i < gHintTidCount; i++) {
+                if (!re4cpu::PutOnSlowCores(re4cpu::GetLayout(), gHintTids[i], &gSlowSet, cores, sizeof(cores))) {
+                    break;
+                }
+                gSlowHelpers = i;
+            }
+            if (gHintTidCount > 1) {
+                re4_log("cores: the %d vertex threads %s", gHintTidCount - 1, cores);
+            }
+            const char* why = "";
+            gHint.Open(gHintTids, gHintTidCount, 33333333LL, &why);
+            re4_log("performance hint: %s (the game thread and %d vertex threads, 33.3 ms a picture)", why,
+                    gHintTidCount - 1);
+        } else {
+            gHint.Close();
+            if (!first) {
+                re4cpu::ReleaseCores();
+            }
+            for (int i = 1; i <= gSlowHelpers; i++) {
+                re4cpu::ReleaseThread(gHintTids[i]);
+            }
+            gSlowHelpers = 0;
+            re4_log("cores: the game thread and the vertex threads left to Android (Force Performance: Default)");
+        }
+        gHintFrom = 0;
+    } else if (gHint.On() && gHintFrom) {
+        gHint.Report(now - gHintFrom - (idle - gHintIdle) - gHintWait);
+    }
+    // about once a second: back on the fast cores if Android moved the thread off them
+    static unsigned checks, moves;
+    if (fast && ++checks % 30 == 0) {
+        bool moved = re4cpu::KeepOnFastCores();
+        for (int i = 1; i <= gSlowHelpers; i++) {
+            moved |= re4cpu::KeepThreadOn(gHintTids[i], gSlowSet);
+        }
+        if (moved && ++moves <= 4) {
+            re4_log("cores: the game thread and the vertex threads put back on their cores (Android had moved "
+                    "them, %u times so far)", moves);
+        }
+    }
+    gHintFrom = now;
+    gHintIdle = idle;
+    gHintWait = 0;
+}
+
 // Timing for the log: game time per chunk (display copy to display copy) and
 // the part of it the core waited for a free slot (the renderer is behind).
 long long gBoundaryAt;
@@ -454,22 +597,39 @@ u32 gTimedChunks;
 long long gIdleAt;                    // re4_idle_ns() at the last log line
 double gFifoBytes, gFifoVertices;     // since the last log line (FIFO: written by the CPU)
 double gListBytes;                    // display list bytes read since the last log line
+re4cpu::ThreadUse gCoreUse;           // processor time of the core thread per chunk, its kind of core
 
 // A display copy ends the chunk: queue it, start the next one if a renderer
 // still takes chunks. Waits while every slot is queued or being read.
 void chunkBoundary(u32 xfb, u32 width, u32 height)
 {
+    re4gx::finishJobs();  // the chunk's vertices complete before it is queued
+    hintChunk();
     const long long start = nowMs();
     if (gBoundaryAt && gWanted.load()) {
         gFrameMs += start - gBoundaryAt;
+        gCoreUse.Picture();
         if (++gTimedChunks == 600) {
             // idle: asleep for the next retrace (time to spare); what is neither is the
-            // game's own work plus this decoder
+            // game's own work plus this decoder. The processor time next to it: less than the
+            // rest means the thread was held back (another thread on its core, a lock, a read)
+            static bool layoutLogged;
+            if (!layoutLogged) {
+                layoutLogged = true;
+                char layout[256];
+                re4cpu::GetLayout().Describe(layout, sizeof(layout));
+                re4_log("GX core: processor %s", layout);
+            }
+            char use[160];
+            gCoreUse.Describe(use, sizeof(use));
             const long long idle = re4_idle_ns();
             re4_log("GX core: 600 chunks, %.1f ms each, of it %.1f ms waiting for the renderer, %.1f ms idle, "
-                    "%.0f KB FIFO, %.0f KB display lists, %.0f vertices",
+                    "%.0f KB FIFO, %.0f KB display lists, %.0f vertices; %s; vertices: %.0f batches in %.1f ms on "
+                    "%d more threads (with the core thread's share), %.0f draws at once",
                     gFrameMs / 600.0, gWaitMs / 600.0, (idle - gIdleAt) / 1e6 / 600.0, gFifoBytes / 1024.0 / 600.0,
-                    gListBytes / 1024.0 / 600.0, gFifoVertices / 600.0);
+                    gListBytes / 1024.0 / 600.0, gFifoVertices / 600.0, use, gJobCount / 600.0,
+                    gJobMicros.exchange(0) / 1000.0 / 600.0, gJobsOn ? gWorkers : 0, gJobInline / 600.0);
+            gJobCount = gJobInline = 0;
             gIdleAt = idle;
             gTimedChunks = 0;
             gFrameMs = gWaitMs = 0;
@@ -478,15 +638,31 @@ void chunkBoundary(u32 xfb, u32 width, u32 height)
     }
     gBoundaryAt = start;
     struct WaitTimer {
-        long long from;
-        ~WaitTimer() { gWaitMs += nowMs() - from; }
-    } waited = {start};
+        long long from, fromNs;
+        ~WaitTimer()
+        {
+            gWaitMs += nowMs() - from;
+            gHintWait += nowNs() - fromNs;
+        }
+    } waited = {start, nowNs()};
+    // "Native": what this picture's first load of the camera's projection was; the next picture decides anew,
+    // also while no chunk is recorded (no renderer, a dropped chunk: else a 4:3 load of long before would stay)
+    const int wide = gWide.exchange(-1);
     std::unique_lock<std::mutex> lock(gMutex);
     if (gCurrent >= 0) {
         Chunk* c = chunk();
         Re4GxChunk& v = c->view;
         v.version = RE4_GX_FRAME_VERSION;
         v.flags |= RE4_GX_CHUNK_XFB;
+        if (gStill.load()) {
+            v.flags |= RE4_GX_CHUNK_STILL;
+        }
+        if (gMovie.load()) {
+            v.flags |= RE4_GX_CHUNK_MOVIE;
+        }
+        if (wide == 1) {
+            v.flags |= RE4_GX_CHUNK_WIDE;
+        }
         v.ops = c->ops.data();
         v.opWords = (u32) c->ops.size();
         v.vertices = c->vertices.data();
@@ -608,6 +784,122 @@ void color(const u8* p, unsigned format, bool be, u8 out[4])
     }
 }
 
+// One float into the vertex being written (out is zero where nothing is put)
+inline void put(u8* out, float v)
+{
+    memcpy(out, &v, 4);
+}
+
+// The components of one attribute, converted as component() does, specialized for the format,
+// the count and the byte order.
+template <unsigned Format, bool BE>
+inline float convert(const u8* p, float scale)
+{
+    if (Format == 0) {
+        return p[0] * scale;
+    }
+    if (Format == 1) {
+        return (signed char) p[0] * scale;
+    }
+    if (Format == 2) {
+        return rd16(p, BE) * scale;
+    }
+    if (Format == 3) {
+        return (short) rd16(p, BE) * scale;
+    }
+    return asFloat(rd32(p, BE));
+}
+
+template <unsigned Format, unsigned Comps, bool BE>
+inline void readComponents(u8* out, const u8* src, float scale)
+{
+    const unsigned cs = Format <= 1 ? 1 : Format <= 3 ? 2 : 4;
+    for (unsigned k = 0; k < Comps; k++) {
+        put(out + 4 * k, convert<Format, BE>(src + k * cs, scale));
+    }
+}
+
+// One attribute of a block of vertices (draw()): src[v] the element of vertex v (null: none, the
+// vertex keeps its zeros), written at out + v * stride. One call per attribute and block instead
+// of one per vertex: in the profile of RE4_GX_BENCH (22.10.2026) the call per attribute of each
+// vertex and the general vertex loop around it were two thirds of the decoder's time.
+typedef void (*BlockReader)(u8* out, u32 stride, const u8* const* src, u32 n, float scale);
+
+template <unsigned Format, unsigned Comps, bool BE>
+void readBlock(u8* out, u32 stride, const u8* const* src, u32 n, float scale)
+{
+    for (u32 v = 0; v < n; v++, out += stride) {
+        if (const u8* p = src[v]) {
+            readComponents<Format, Comps, BE>(out, p, scale);
+        }
+    }
+}
+
+template <unsigned Format, bool BE>
+BlockReader blockReaderFor(unsigned comps)
+{
+    switch (comps) {
+    case 1:
+        return readBlock<Format, 1, BE>;
+    case 2:
+        return readBlock<Format, 2, BE>;
+    case 3:
+        return readBlock<Format, 3, BE>;
+    default:
+        return readBlock<Format, 9, BE>;
+    }
+}
+
+// format: 0 u8, 1 s8, 2 u16, 3 s16, 4 and above f32 (componentSize, component)
+BlockReader blockReaderFor(unsigned format, unsigned comps, bool be)
+{
+    switch (format) {
+    case 0:
+        return be ? blockReaderFor<0, true>(comps) : blockReaderFor<0, false>(comps);
+    case 1:
+        return be ? blockReaderFor<1, true>(comps) : blockReaderFor<1, false>(comps);
+    case 2:
+        return be ? blockReaderFor<2, true>(comps) : blockReaderFor<2, false>(comps);
+    case 3:
+        return be ? blockReaderFor<3, true>(comps) : blockReaderFor<3, false>(comps);
+    default:
+        return be ? blockReaderFor<4, true>(comps) : blockReaderFor<4, false>(comps);
+    }
+}
+
+// A colour of a block of vertices: src[v] never null (an indexed colour outside memory reads
+// kZero), always written, as color() converts it.
+typedef void (*BlockColor)(u8* out, u32 stride, const u8* const* src, u32 n);
+
+template <unsigned Format, bool BE>
+void colorBlock(u8* out, u32 stride, const u8* const* src, u32 n)
+{
+    for (u32 v = 0; v < n; v++, out += stride) {
+        u8 rgba[4];
+        color(src[v], Format, BE, rgba);
+        memcpy(out, rgba, 4);
+    }
+}
+
+template <bool BE>
+BlockColor colorBlockFor(unsigned format)
+{
+    switch (format & 7) {
+    case 0:
+        return colorBlock<0, BE>;
+    case 1:
+        return colorBlock<1, BE>;
+    case 2:
+        return colorBlock<2, BE>;
+    case 3:
+        return colorBlock<3, BE>;
+    case 4:
+        return colorBlock<4, BE>;
+    default:
+        return colorBlock<5, BE>;
+    }
+}
+
 // The vertex format of one draw: what the stream holds per vertex and where
 // each attribute goes in the chunk's vertex layout.
 struct Format {
@@ -629,6 +921,10 @@ struct Format {
     u32 posBytes, nrmCs, nrmComps, clrBytes[2], texCs[8], texBytes[8];
     u8 texList[8], texCount;
     u8 mtxList[8], mtxCount;
+    // the block readers of draw(), [0] host order, [1] big-endian (direct data of a big-endian
+    // stream; arrays are host order)
+    BlockReader posBlock[2], nrmBlock[2], nrmPartBlock, texBlock[8][2];
+    BlockColor clrBlock[2][2];
 };
 
 void describe(u32 vat, Format& f)
@@ -738,6 +1034,18 @@ void describe(u32 vat, Format& f)
             f.mtxList[f.mtxCount++] = (u8) i;
         }
     }
+    for (int be = 0; be < 2; be++) {
+        f.posBlock[be] = blockReaderFor(f.posFormat, f.posComps, be != 0);
+        f.nrmBlock[be] = blockReaderFor(f.nrmFormat, f.nrmComps, be != 0);
+        for (int k = 0; k < 2; k++) {
+            f.clrBlock[k][be] = be ? colorBlockFor<true>(f.clrFormat[k]) : colorBlockFor<false>(f.clrFormat[k]);
+        }
+        for (u32 j = 0; j < f.texCount; j++) {
+            const u32 i = f.texList[j];
+            f.texBlock[i][be] = blockReaderFor(f.texFormat[i], f.texComps[i], be != 0);
+        }
+    }
+    f.nrmPartBlock = blockReaderFor(f.nrmFormat, 3, false);  // one of three indexed parts (NBT3)
 }
 
 // The vertex formats as the CP registers describe them now: worked out once
@@ -747,11 +1055,14 @@ void describe(u32 vat, Format& f)
 Format gFormat[8];
 bool gFormatValid[8];
 
+u32 gFormatSerial;  // formats described so far (the vertex jobs' snapshots)
+
 const Format& format(u32 vat)
 {
     if (!gFormatValid[vat]) {
         describe(vat, gFormat[vat]);
         gFormatValid[vat] = true;
+        gFormatSerial++;
     }
     return gFormat[vat];
 }
@@ -774,12 +1085,34 @@ struct Array {
     u32 stride;
 };
 
-Array array(u32 index)
+// The arrays as host memory, kept until their CP registers or the windows of port memory change
+// (memorySpan for each array of each draw: about 2 % of the decoder with the forest's short
+// draws of RE4_GX_BENCH_STRIP=8). The windows are checked once per draw or matrix load
+// (arraysCurrent), not per array.
+Array gArray[16];
+bool gArrayValid[16];
+u32 gArrayGeneration;
+u32 gArraySerial;  // arrays resolved so far (the vertex jobs' snapshots)
+
+void arraysCurrent()
 {
-    Array a;
-    a.stride = gGp.arrayStride[index];
-    a.base = re4gx::memorySpan(gGp.arrayBase[index], &a.limit);
-    return a;
+    const u32 generation = re4gx::aliasGeneration();
+    if (gArrayGeneration != generation) {
+        gArrayGeneration = generation;
+        memset(gArrayValid, 0, sizeof(gArrayValid));
+    }
+}
+
+const Array& array(u32 index)
+{
+    if (!gArrayValid[index]) {
+        Array& a = gArray[index];
+        a.stride = gGp.arrayStride[index];
+        a.base = re4gx::memorySpan(gGp.arrayBase[index], &a.limit);
+        gArrayValid[index] = true;
+        gArraySerial++;
+    }
+    return gArray[index];
 }
 
 inline const u8* at(const Array& a, u32 index, u32 bytes)
@@ -788,78 +1121,528 @@ inline const u8* at(const Array& a, u32 index, u32 bytes)
     return a.base && offset < a.limit && bytes <= a.limit - offset ? a.base + offset : nullptr;
 }
 
-// One float into the vertex being written (out is zero where nothing is put)
-inline void put(u8* out, float v)
+// Where each attribute of the vertices of one block comes from (convertVertices; one per thread).
+const u32 kBlock = 128;
+struct VertexBlock {
+    const u8* pos[kBlock];
+    const u8* nrm[3][kBlock];
+    const u8* clr[2][kBlock];
+    const u8* tex[8][kBlock];
+};
+VertexBlock gBlock;  // the core thread's
+
+// The arrays a draw reads, as host memory at the time of the draw: positions, normals, colours
+// 0 and 1, texture coordinates 0-7 (not read: no memory).
+struct DrawArrays {
+    Array a[12];
+};
+
+// The vertices of one draw: `count` of them from the stream bytes at `in` (and the arrays) into
+// `out` (count * f.stride bytes, cleared here). First where each attribute of each vertex comes
+// from and the matrix indices, then each attribute of a block at once. Returns how many vertices
+// carry the index that skips them. Any thread (the vertex jobs).
+u32 convertVertices(const Format& f, const DrawArrays& arrays, const u8* in, u32 count, bool be, u8* out,
+                    VertexBlock& blk)
 {
-    memcpy(out, &v, 4);
+    const Array& pos = arrays.a[0];
+    const Array& nrm = arrays.a[1];
+    const u32 stride = f.stride;
+    const u32 posMode = f.posMode, nrmMode = f.nrmMode;
+    const u32 posIndex = indexSize(posMode), nrmIndex = indexSize(nrmMode);
+    const u32 posBytes = f.posBytes, nrmBytes = f.nrmComps * f.nrmCs, nrmCs = f.nrmCs;
+    const bool nbt3 = f.nbt3, anyMatrix = f.anyMatrix;
+    const int sb = be ? 1 : 0;
+    u32 skipped = 0;
+    memset(out, 0, (size_t) count * stride);  // what a vertex does not have stays 0
+    for (u32 done = 0; done < count;) {
+        const u32 n = count - done < kBlock ? count - done : kBlock;
+        u8* first = out + (size_t) done * stride;
+        u8* o = first;
+        for (u32 v = 0; v < n; v++, o += stride) {
+            if (anyMatrix) {  // the matrix indices: the defaults, then those of the vertex
+                u8* matrix = o + f.offMatrix;
+                memcpy(matrix, f.defaults, 9);
+                if (f.pnmtx) {
+                    matrix[0] = *in++ & 63;
+                }
+                for (u32 j = 0; j < f.mtxCount; j++) {
+                    matrix[1 + f.mtxList[j]] = *in++ & 63;
+                }
+            }
+            // position (the vertex bytes start as zeros: what is not there stays 0)
+            if (posMode == 1) {
+                blk.pos[v] = in;
+                in += posBytes;
+            } else if (posMode) {
+                u32 index = posMode == 2 ? *in : rd16(in, be);
+                in += posIndex;
+                if ((posMode == 2 && index == 0xFF) || (posMode == 3 && index == 0xFFFF)) {
+                    skipped++;  // GX skips such a vertex; kept here (rare)
+                }
+                blk.pos[v] = at(pos, index, posBytes);
+            }
+            // normal (binormal, tangent: the three one after the other from offNormal)
+            if (nrmMode == 1) {
+                blk.nrm[0][v] = in;
+                in += nrmBytes;
+            } else if (nbt3) {
+                // three indices: normal, binormal, tangent, each the part of its element
+                for (u32 part = 0; part < 3; part++) {
+                    u32 index = nrmMode == 2 ? *in : rd16(in, be);
+                    in += nrmIndex;
+                    const u8* src = at(nrm, index, 9 * nrmCs);
+                    blk.nrm[part][v] = src ? src + part * 3 * nrmCs : nullptr;
+                }
+            } else if (nrmMode) {
+                u32 index = nrmMode == 2 ? *in : rd16(in, be);
+                in += nrmIndex;
+                blk.nrm[0][v] = at(nrm, index, nrmBytes);
+            }
+            for (int k = 0; k < 2; k++) {
+                if (f.clrMode[k] == 1) {
+                    blk.clr[k][v] = in;
+                    in += f.clrBytes[k];
+                } else if (f.clrMode[k]) {
+                    u32 index = f.clrMode[k] == 2 ? *in : rd16(in, be);
+                    in += indexSize(f.clrMode[k]);
+                    const u8* src = at(arrays.a[2 + k], index, f.clrBytes[k]);
+                    blk.clr[k][v] = src ? src : kZero;
+                }
+            }
+            for (u32 j = 0; j < f.texCount; j++) {
+                const u32 i = f.texList[j];
+                if (f.texMode[i] == 1) {
+                    blk.tex[i][v] = in;
+                    in += f.texBytes[i];
+                } else {
+                    u32 index = f.texMode[i] == 2 ? *in : rd16(in, be);
+                    in += indexSize(f.texMode[i]);
+                    blk.tex[i][v] = at(arrays.a[4 + i], index, f.texBytes[i]);
+                }
+            }
+        }
+        // direct data in the stream's byte order, array elements in host order
+        if (posMode) {
+            f.posBlock[posMode == 1 ? sb : 0](first, stride, blk.pos, n, f.posScale);
+        }
+        if (nrmMode == 1) {
+            f.nrmBlock[sb](first + f.offNormal, stride, blk.nrm[0], n, f.nrmScale);
+        } else if (nbt3) {
+            for (u32 part = 0; part < 3; part++) {
+                f.nrmPartBlock(first + f.offNormal + 12 * part, stride, blk.nrm[part], n, f.nrmScale);
+            }
+        } else if (nrmMode) {
+            f.nrmBlock[0](first + f.offNormal, stride, blk.nrm[0], n, f.nrmScale);
+        }
+        for (int k = 0; k < 2; k++) {
+            if (f.clrMode[k]) {
+                f.clrBlock[k][f.clrMode[k] == 1 ? sb : 0](first + f.offColor[k], stride, blk.clr[k], n);
+            }
+        }
+        for (u32 j = 0; j < f.texCount; j++) {
+            const u32 i = f.texList[j];
+            f.texBlock[i][f.texMode[i] == 1 ? sb : 0](first + f.offTex[i], stride, blk.tex[i], n, f.texScale[i]);
+        }
+        done += n;
+    }
+    return skipped;
 }
 
-// The components of one attribute, converted as component() does, by a
-// function chosen once per draw for the format, the count and the byte order
-// (instead of a switch for every component of every vertex).
-typedef void (*Reader)(u8* out, const u8* src, float scale);
-
-template <unsigned Format, bool BE>
-inline float convert(const u8* p, float scale)
+// How many indices a draw of `count` vertices with the primitive `kind` (op & 0xF8) gets.
+size_t indexCount(u32 kind, u32 count)
 {
-    if (Format == 0) {
-        return p[0] * scale;
-    }
-    if (Format == 1) {
-        return (signed char) p[0] * scale;
-    }
-    if (Format == 2) {
-        return rd16(p, BE) * scale;
-    }
-    if (Format == 3) {
-        return (short) rd16(p, BE) * scale;
-    }
-    return asFloat(rd32(p, BE));
-}
-
-template <unsigned Format, unsigned Comps, bool BE>
-void readComponents(u8* out, const u8* src, float scale)
-{
-    const unsigned cs = Format <= 1 ? 1 : Format <= 3 ? 2 : 4;
-    for (unsigned k = 0; k < Comps; k++) {
-        put(out + 4 * k, convert<Format, BE>(src + k * cs, scale));
-    }
-}
-
-template <unsigned Format, bool BE>
-Reader readerFor(unsigned comps)
-{
-    switch (comps) {
-    case 1:
-        return readComponents<Format, 1, BE>;
-    case 2:
-        return readComponents<Format, 2, BE>;
-    case 3:
-        return readComponents<Format, 3, BE>;
+    switch (kind) {
+    case 0x80:
+    case 0x88:
+        return (size_t) (count / 4) * 6;
+    case 0x90:
+        return (size_t) (count / 3) * 3;
+    case 0x98:
+    case 0xA0:
+        return count >= 3 ? (size_t) (count - 2) * 3 : 0;
+    case 0xA8:
+        return (size_t) (count / 2) * 2;
+    case 0xB0:
+        return count >= 2 ? (size_t) (count - 1) * 2 : 0;
     default:
-        return readComponents<Format, 9, BE>;
+        return count;
     }
 }
 
-// format: 0 u8, 1 s8, 2 u16, 3 s16, 4 and above f32 (componentSize, component)
-Reader readerFor(unsigned format, unsigned comps, bool be)
+// The indices of such a draw at `w`, relative to the first vertex of the renderer draw it is part
+// of (`o`: the vertices of the draws it joins, before it). Any thread (the vertex jobs).
+void writeIndices(u32 kind, u32 count, u32 o, u16* w)
 {
-    switch (format) {
-    case 0:
-        return be ? readerFor<0, true>(comps) : readerFor<0, false>(comps);
-    case 1:
-        return be ? readerFor<1, true>(comps) : readerFor<1, false>(comps);
-    case 2:
-        return be ? readerFor<2, true>(comps) : readerFor<2, false>(comps);
-    case 3:
-        return be ? readerFor<3, true>(comps) : readerFor<3, false>(comps);
-    default:
-        return be ? readerFor<4, true>(comps) : readerFor<4, false>(comps);
+    switch (kind) {
+    case 0x80:  // quads
+    case 0x88:  // quads (second encoding)
+        for (u32 q = 0; q + 3 < count; q += 4) {
+            w[0] = (u16) (o + q);
+            w[1] = (u16) (o + q + 1);
+            w[2] = (u16) (o + q + 2);
+            w[3] = (u16) (o + q);
+            w[4] = (u16) (o + q + 2);
+            w[5] = (u16) (o + q + 3);
+            w += 6;
+        }
+        break;
+    case 0x90:  // triangles
+        for (u32 i = 0; i + 2 < count; i += 3) {
+            w[0] = (u16) (o + i);
+            w[1] = (u16) (o + i + 1);
+            w[2] = (u16) (o + i + 2);
+            w += 3;
+        }
+        break;
+    case 0x98:  // triangle strip: every second triangle flipped back
+        for (u32 i = 2; i < count; i++) {
+            u32 k = i - 2;
+            w[0] = (u16) (o + ((k & 1) ? k + 1 : k));
+            w[1] = (u16) (o + ((k & 1) ? k : k + 1));
+            w[2] = (u16) (o + i);
+            w += 3;
+        }
+        break;
+    case 0xA0:  // triangle fan
+        for (u32 i = 2; i < count; i++) {
+            w[0] = (u16) o;
+            w[1] = (u16) (o + i - 1);
+            w[2] = (u16) (o + i);
+            w += 3;
+        }
+        break;
+    case 0xA8:  // lines
+        for (u32 i = 0; i + 1 < count; i += 2) {
+            w[0] = (u16) (o + i);
+            w[1] = (u16) (o + i + 1);
+            w += 2;
+        }
+        break;
+    case 0xB0:  // line strip
+        for (u32 i = 1; i < count; i++) {
+            w[0] = (u16) (o + i - 1);
+            w[1] = (u16) (o + i);
+            w += 2;
+        }
+        break;
+    default:  // points
+        for (u32 i = 0; i < count; i++) {
+            *w++ = (u16) (o + i);
+        }
+        break;
     }
 }
 
-// Decodes `count` vertices at `data` into the chunk, appends the indices.
-void draw(u8 op, u32 count, const u8* data, bool be)
+// --- vertex jobs ------------------------------------------------------------------
+//
+// The vertices of the draws are converted on other cores (wish of the project owner, 22.10.2026:
+// on weak devices the core thread spends most of its time here, and it grows with the vertices of
+// a picture). The core thread decodes the commands in order as before; each draw gets its place in
+// the chunk at once (vertices, indices, the draw record), and converting its vertices becomes an
+// entry of a batch. Most draws are small (the forest of r100: about 8 vertices per GXBegin), so a
+// batch collects entries until kBatchVertices; worker threads take whole batches (and the core
+// thread, when it has to wait for them). A batch reads the arrays and display lists in game memory
+// a little after the command, as the GameCube's GP did while the CPU went on; all of them are done
+// (finishJobs) before the GP reports back to the game (draw done, tokens: the game may then change
+// what was drawn), before an EFB copy marks memory, before a chunk goes to the renderer, before a
+// display list is recorded into memory and before the chunk's buffers would move.
+// RE4_GX_THREADS=N: N workers (0: none, every draw on the core thread as before); by default up
+// to 3, leaving 3 cores to the game, the renderer and the sound.
+
+// The vertex format and arrays of a run of draws (copied: the registers change meanwhile).
+struct Snapshot {
+    Format f;
+    DrawArrays arrays;
+};
+struct DrawEntry {
+    const Snapshot* snap;
+    const u8* in;
+    u8* out;
+    u16* ix;
+    u32 count, kind, o;
+    bool be;
+    u64 result;  // RE4_GX_JOB_CHECK=1: a hash of its vertices converted when the draw came
+};
+// RE4_GX_JOB_CHECK=1 (diagnosis): every draw also converted at once on the core thread; a batch
+// whose result differs logs it (memory the draw reads changed between the command and the batch)
+bool gJobCheck;
+struct Batch {
+    u32 begin, end;  // entries
+};
+const u32 kJobs = 1024;              // batches between two finishJobs at most
+const u32 kEntries = 16384;          // draws ...
+const u32 kSnapshots = 2048;         // formats and arrays ...
+const size_t kJobBytes = 1u << 20;   // vertex bytes of FIFO draws kept for their batches (the stream moves on)
+const u32 kBatchVertices = 384;      // a batch is handed out from this many vertices on
+const u32 kBatchEntries = 64;        // ... or draws
+const int kMaxWorkers = 3;
+static_assert(kMaxWorkers <= 8, "gWorkerTids holds 8");
+
+std::vector<Batch> gJobs;            // a ring; a place is used again after finishJobs
+std::vector<DrawEntry> gEntries;     // from 0 again after each finishJobs
+std::vector<Snapshot> gSnaps;
+std::vector<u8> gJobBytes;
+u32 gEntryUsed, gSnapUsed;
+size_t gJobBytesUsed;
+u32 gBatchBegin, gBatchVertices;     // the batch being filled: its first entry, its vertices
+int gSnapVat = -1;                   // the snapshot the last entry used: its format and arrays
+u32 gSnapFormat, gSnapArrays;
+u32 gJobBase;                        // batches handed out at the last finishJobs
+// (each on a cache line of its own: the core thread and the workers write them)
+alignas(64) std::atomic<u32> gJobsTail(0);     // batches handed out
+alignas(64) std::atomic<u32> gJobsNext(0);     // batches taken
+alignas(64) std::atomic<u32> gJobsDone(0);     // batches converted
+alignas(64) std::atomic<u32> gJobsSkipped(0);  // their vertices with the skip index
+alignas(64) std::atomic<int> gSleepers(0);
+alignas(64) std::atomic<int> gLooking(0);      // workers awake without a batch (handOut wakes none then)
+std::mutex gJobMutex;
+std::condition_variable gJobCv;
+
+bool jobWaiting()
+{
+    return (int32_t) (gJobsTail.load() - gJobsNext.load()) > 0;
+}
+
+// Takes one batch and converts its draws; false when none is waiting.
+bool runOneJob(VertexBlock& blk)
+{
+    u32 n = gJobsNext.load();
+    for (;;) {
+        if ((int32_t) (gJobsTail.load() - n) <= 0) {
+            return false;
+        }
+        if (gJobsNext.compare_exchange_weak(n, n + 1)) {
+            break;
+        }
+    }
+    const Batch b = gJobs[n % kJobs];
+    const auto start = std::chrono::steady_clock::now();
+    u32 skipped = 0;
+    for (u32 e = b.begin; e < b.end; e++) {
+        const DrawEntry& d = gEntries[e];
+        skipped += convertVertices(d.snap->f, d.snap->arrays, d.in, d.count, d.be, d.out, blk);
+        writeIndices(d.kind, d.count, d.o, d.ix);
+        if (gJobCheck && hashBytes(d.out, (size_t) d.count * d.snap->f.stride, 0) != d.result) {
+            re4_log("GX job check: a draw of %u vertices came out differently than when it came (entry %u): "
+                    "memory it reads changed meanwhile",
+                    d.count, e);
+        }
+    }
+    if (skipped) {
+        gJobsSkipped.fetch_add(skipped);
+    }
+    gJobMicros.fetch_add((u32) std::chrono::duration_cast<std::chrono::microseconds>(
+                             std::chrono::steady_clock::now() - start)
+                             .count());
+    gJobsDone.fetch_add(1);
+    return true;
+}
+
+inline void cpuRelax()
+{
+#if defined(__i386__) || defined(__x86_64__)
+    __builtin_ia32_pause();
+#elif defined(__arm__) || defined(__aarch64__)
+    __asm__ __volatile__("yield");
+#endif
+}
+
+void worker()
+{
+    pthread_setname_np(pthread_self(), "re4-gx-verts");  // in profiles (simpleperf) and crash reports
+    const int slot = gWorkerTidCount.fetch_add(1);
+    if (slot < 8) {
+        gWorkerTids[slot].store(re4cpu::ThreadId());
+    }
+    VertexBlock* blk = new VertexBlock;
+    for (;;) {
+        if (runOneJob(*blk)) {
+            continue;
+        }
+        // the batches of a picture come in bursts, a wake-up costs more than a batch: awake for
+        // 0.3 ms before sleeping
+        gLooking++;
+        bool found = false;
+        const auto until = std::chrono::steady_clock::now() + std::chrono::microseconds(300);
+        while (!found) {
+            for (int i = 0; i < 256 && !found; i++) {
+                cpuRelax();
+                found = jobWaiting();
+            }
+            if (!found && std::chrono::steady_clock::now() > until) {
+                break;
+            }
+        }
+        gLooking--;
+        if (found) {
+            continue;
+        }
+        std::unique_lock<std::mutex> lock(gJobMutex);
+        gSleepers++;
+        gJobCv.wait(lock, [] { return jobWaiting(); });
+        gSleepers--;
+    }
+}
+
+void startWorkers(int want)
+{
+    if (gJobs.empty()) {
+        gJobs.resize(kJobs);
+        gEntries.resize(kEntries);
+        gSnaps.resize(kSnapshots);
+        gJobBytes.resize(kJobBytes);
+    }
+    want = std::min(want, kMaxWorkers);
+    while (gWorkers < want) {
+        std::thread(worker).detach();
+        gWorkers++;
+    }
+}
+
+// The workers wanted: RE4_GX_THREADS, else the cores minus 3 (at most 3).
+int defaultWorkers()
+{
+    const char* env = getenv("RE4_GX_THREADS");
+    const int want = env && *env ? atoi(env) : (int) std::thread::hardware_concurrency() - 3;
+    return std::max(0, std::min(want, kMaxWorkers));
+}
+
+// The workers the first time a draw needs them.
+void decideWorkers()
+{
+    gWorkers = 0;
+    const int want = defaultWorkers();
+    if (want > 0) {
+        startWorkers(want);
+    }
+    gJobsOn = want > 0;
+    const char* check = getenv("RE4_GX_JOB_CHECK");
+    gJobCheck = check && *check == '1';
+    re4_log("GX: the vertices of the draws converted on %d more threads (%u cores)", want,
+            std::thread::hardware_concurrency());
+}
+
+// Waits until the batches handed out are converted (the core thread takes some itself).
+void waitHandedOut()
+{
+    const u32 tail = gJobsTail.load();
+    if (tail == gJobBase) {
+        return;
+    }
+    while (runOneJob(gBlock)) {
+    }
+    while (gJobsDone.load() != tail) {
+        std::this_thread::yield();
+    }
+    gJobBase = tail;
+    gStats.skipped += gJobsSkipped.exchange(0);
+}
+
+// Hands out the batch being filled.
+void handOut()
+{
+    if (gBatchBegin == gEntryUsed) {
+        return;
+    }
+    if (gJobsTail.load() - gJobBase >= kJobs) {
+        waitHandedOut();  // the ring is full
+    }
+    const u32 tail = gJobsTail.load();
+    gJobs[tail % kJobs] = Batch{gBatchBegin, gEntryUsed};
+    gJobsTail.store(tail + 1);
+    gBatchBegin = gEntryUsed;
+    gBatchVertices = 0;
+    gJobCount++;
+    if (gLooking.load() == 0 && gSleepers.load() > 0) {
+        std::lock_guard<std::mutex> lock(gJobMutex);
+        gJobCv.notify_one();
+    }
+}
+
+}  // namespace
+
+namespace re4gx {
+
+void finishJobs()
+{
+    handOut();
+    waitHandedOut();
+    gEntryUsed = gBatchBegin = 0;
+    gSnapUsed = 0;
+    gSnapVat = -1;
+    gJobBytesUsed = 0;
+}
+
+}  // namespace re4gx
+
+namespace {
+
+// A draw's vertices as an entry of the batch being filled. False when its bytes do not fit the
+// store (converted at once then).
+bool addEntry(u32 vat, const Format& f, const DrawArrays& arrays, const u8* data, bool stable, u32 count, bool be,
+              u8* out, u16* ix, u32 kind, u32 o)
+{
+    const u8* in = data;
+    if (!stable) {
+        const size_t bytes = (size_t) count * f.inSize;
+        if (bytes > kJobBytes) {
+            return false;
+        }
+        if (gJobBytesUsed + bytes > kJobBytes) {
+            re4gx::finishJobs();
+        }
+        memcpy(gJobBytes.data() + gJobBytesUsed, data, bytes);
+        in = gJobBytes.data() + gJobBytesUsed;
+        gJobBytesUsed += bytes;
+    }
+    if (gEntryUsed == kEntries) {
+        re4gx::finishJobs();
+        if (!stable) {  // the store began anew
+            memcpy(gJobBytes.data(), data, (size_t) count * f.inSize);
+            in = gJobBytes.data();
+            gJobBytesUsed = (size_t) count * f.inSize;
+        }
+    }
+    if ((int) vat != gSnapVat || gSnapFormat != gFormatSerial || gSnapArrays != gArraySerial) {
+        if (gSnapUsed == kSnapshots) {
+            re4gx::finishJobs();
+            if (!stable) {
+                memcpy(gJobBytes.data(), data, (size_t) count * f.inSize);
+                in = gJobBytes.data();
+                gJobBytesUsed = (size_t) count * f.inSize;
+            }
+        }
+        Snapshot& sn = gSnaps[gSnapUsed++];
+        sn.f = f;
+        sn.arrays = arrays;
+        gSnapVat = (int) vat;
+        gSnapFormat = gFormatSerial;
+        gSnapArrays = gArraySerial;
+    }
+    DrawEntry& e = gEntries[gEntryUsed++];
+    e.snap = &gSnaps[gSnapUsed - 1];
+    e.in = in;
+    e.out = out;
+    e.ix = ix;
+    e.count = count;
+    e.kind = kind;
+    e.o = o;
+    e.be = be;
+    if (gJobCheck) {
+        std::vector<u8> now((size_t) count * f.stride);
+        convertVertices(f, arrays, in, count, be, now.data(), gBlock);
+        e.result = hashBytes(now.data(), now.size(), 0);
+    }
+    gBatchVertices += count;
+    if (gBatchVertices >= kBatchVertices || gEntryUsed - gBatchBegin >= kBatchEntries) {
+        handOut();
+    }
+    return true;
+}
+
+// Decodes `count` vertices at `data` into the chunk, appends the indices. `stable`: the bytes
+// stay where they are (a display list; the FIFO's stream moves on).
+void draw(u8 op, u32 count, const u8* data, bool be, bool stable)
 {
     gStats.draws++;
     gStats.vertices += count;
@@ -868,222 +1651,42 @@ void draw(u8 op, u32 count, const u8* data, bool be)
     if (!c || count == 0) {
         return;
     }
+    if (gWorkers < 0) {
+        decideWorkers();
+    }
     u32 vat = op & 7;
     const Format& f = format(vat);
     // the arrays this format reads
-    Array pos = {}, nrm = {}, clr[2] = {}, tex[8] = {};
-    if (f.posMode >= 2) {
-        pos = array(0);
+    static const Array kNone = {nullptr, 0, 0};
+    arraysCurrent();
+    DrawArrays arrays;
+    arrays.a[0] = f.posMode >= 2 ? array(0) : kNone;
+    arrays.a[1] = f.nrmMode >= 2 ? array(1) : kNone;
+    arrays.a[2] = f.clrMode[0] >= 2 ? array(2) : kNone;
+    arrays.a[3] = f.clrMode[1] >= 2 ? array(3) : kNone;
+    for (u32 i = 0; i < 8; i++) {
+        arrays.a[4 + i] = f.texMode[i] >= 2 ? array(4 + i) : kNone;
     }
-    if (f.nrmMode >= 2) {
-        nrm = array(1);
-    }
-    for (int k = 0; k < 2; k++) {
-        if (f.clrMode[k] >= 2) {
-            clr[k] = array(2 + k);
-        }
-    }
-    for (u32 j = 0; j < f.texCount; j++) {
-        const u32 i = f.texList[j];
-        if (f.texMode[i] >= 2) {
-            tex[i] = array(4 + i);
-        }
-    }
-    // the readers: direct data in the stream's byte order, arrays in host order
-    const bool posDirect = f.posMode == 1, nrmDirect = f.nrmMode == 1;
-    const Reader posRead = readerFor(f.posFormat, f.posComps, posDirect && be);
-    const Reader nrmRead = readerFor(f.nrmFormat, f.nrmComps, nrmDirect && be);
-    const Reader nrmPartRead = readerFor(f.nrmFormat, 3, false);  // one of three indexed parts (NBT3)
-    Reader texRead[8];
-    for (u32 j = 0; j < f.texCount; j++) {
-        const u32 i = f.texList[j];
-        texRead[i] = readerFor(f.texFormat[i], f.texComps[i], f.texMode[i] == 1 && be);
-    }
-    u32 base = (u32) c->vertices.size();
-    c->vertices.resize(base + (size_t) count * f.stride);
-    u8* out = c->vertices.data() + base;
-    const u8* in = data;
-    const u32 posIndex = indexSize(f.posMode), nrmIndex = indexSize(f.nrmMode);
-    for (u32 v = 0; v < count; v++, out += f.stride) {
-        if (f.anyMatrix) {  // the matrix indices: the defaults, then those of the vertex
-            u8* matrix = out + f.offMatrix;
-            memcpy(matrix, f.defaults, 9);
-            if (f.pnmtx) {
-                matrix[0] = *in++ & 63;
-            }
-            for (u32 j = 0; j < f.mtxCount; j++) {
-                matrix[1 + f.mtxList[j]] = *in++ & 63;
-            }
-        }
-        // position (the vertex bytes start as zeros: what is not there stays 0)
-        {
-            const u8* src = nullptr;
-            if (f.posMode == 1) {
-                src = in;
-                in += f.posBytes;
-            } else if (f.posMode) {
-                u32 index = f.posMode == 2 ? *in : rd16(in, be);
-                in += posIndex;
-                if ((f.posMode == 2 && index == 0xFF) || (f.posMode == 3 && index == 0xFFFF)) {
-                    gStats.skipped++;  // GX skips such a vertex; kept here (rare)
-                }
-                src = at(pos, index, f.posBytes);
-            }
-            if (src) {
-                posRead(out, src, f.posScale);
-            }
-        }
-        // normal (binormal, tangent)
-        if (f.nrmMode) {
-            // normal, then binormal and tangent: the three sit one after the
-            // other from offNormal (offBt = offNormal + 12)
-            u8* o = out + f.offNormal;
-            const u32 cs = f.nrmCs, comps = f.nrmComps;
-            if (f.nrmMode == 1) {
-                nrmRead(o, in, f.nrmScale);
-                in += comps * cs;
-            } else if (f.nbt3) {
-                // three indices: normal, binormal, tangent, each the part of its element
-                for (u32 part = 0; part < 3; part++) {
-                    u32 index = f.nrmMode == 2 ? *in : rd16(in, be);
-                    in += nrmIndex;
-                    if (const u8* src = at(nrm, index, 9 * cs)) {
-                        nrmPartRead(o + 12 * part, src + part * 3 * cs, f.nrmScale);
-                    }
-                }
-            } else {
-                u32 index = f.nrmMode == 2 ? *in : rd16(in, be);
-                in += nrmIndex;
-                if (const u8* src = at(nrm, index, comps * cs)) {
-                    nrmRead(o, src, f.nrmScale);
-                }
-            }
-        }
-        for (int k = 0; k < 2; k++) {
-            if (!f.clrMode[k]) {
-                continue;
-            }
-            u8 rgba[4] = {0, 0, 0, 255};
-            if (f.clrMode[k] == 1) {
-                color(in, f.clrFormat[k], be, rgba);
-                in += f.clrBytes[k];
-            } else {
-                u32 index = f.clrMode[k] == 2 ? *in : rd16(in, be);
-                in += indexSize(f.clrMode[k]);
-                const u8* src = at(clr[k], index, f.clrBytes[k]);
-                color(src ? src : kZero, f.clrFormat[k], false, rgba);
-            }
-            memcpy(out + f.offColor[k], rgba, 4);
-        }
-        for (u32 j = 0; j < f.texCount; j++) {
-            const u32 i = f.texList[j];
-            const u8* src = nullptr;
-            if (f.texMode[i] == 1) {
-                src = in;
-                in += f.texBytes[i];
-            } else {
-                u32 index = f.texMode[i] == 2 ? *in : rd16(in, be);
-                in += indexSize(f.texMode[i]);
-                src = at(tex[i], index, f.texBytes[i]);
-            }
-            if (src) {
-                texRead[i](out + f.offTex[i], src, f.texScale[i]);
-            }
-        }
-    }
-
-    // indices, relative to the first vertex: written in place (one insert per
-    // triangle was a few percent)
-    u32 first = (u32) c->indices.size();
-    u32 primitive = RE4_GX_TRIANGLES;
-    std::vector<u16>& ix = c->indices;
+    // the place of the vertices and indices in the chunk (batches write there: they must not move)
+    const u32 base = (u32) c->vertices.size();
+    const size_t vertexEnd = base + (size_t) count * f.stride;
     const u32 kind = op & 0xF8;
-    size_t added = 0;
-    switch (kind) {
-    case 0x80:
-    case 0x88:
-        added = (size_t) (count / 4) * 6;
-        break;
-    case 0x90:
-        added = (size_t) (count / 3) * 3;
-        break;
-    case 0x98:
-    case 0xA0:
-        added = count >= 3 ? (size_t) (count - 2) * 3 : 0;
-        break;
-    case 0xA8:
-        added = (size_t) (count / 2) * 2;
-        break;
-    case 0xB0:
-        added = count >= 2 ? (size_t) (count - 1) * 2 : 0;
-        break;
-    default:
-        added = count;
-        break;
+    std::vector<u16, NoInit<u16>>& ix = c->indices;
+    const u32 first = (u32) ix.size();
+    const size_t added = indexCount(kind, count);
+    if (vertexEnd > c->vertices.capacity() || first + added > ix.capacity()) {
+        re4gx::finishJobs();
+        c->vertices.reserve(std::max(vertexEnd, c->vertices.capacity() * 2));
+        ix.reserve(std::max(first + added, ix.capacity() * 2));
     }
+    c->vertices.resize(vertexEnd);
     ix.resize(first + added);
-    u16* w = ix.data() + first;
-    switch (kind) {
-    case 0x80:  // quads
-    case 0x88:  // quads (second encoding)
-        for (u32 q = 0; q + 3 < count; q += 4) {
-            w[0] = (u16) q;
-            w[1] = (u16) (q + 1);
-            w[2] = (u16) (q + 2);
-            w[3] = (u16) q;
-            w[4] = (u16) (q + 2);
-            w[5] = (u16) (q + 3);
-            w += 6;
-        }
-        break;
-    case 0x90:  // triangles
-        for (u32 i = 0; i + 2 < count; i += 3) {
-            w[0] = (u16) i;
-            w[1] = (u16) (i + 1);
-            w[2] = (u16) (i + 2);
-            w += 3;
-        }
-        break;
-    case 0x98:  // triangle strip: every second triangle flipped back
-        for (u32 i = 2; i < count; i++) {
-            u32 k = i - 2;
-            w[0] = (u16) ((k & 1) ? k + 1 : k);
-            w[1] = (u16) ((k & 1) ? k : k + 1);
-            w[2] = (u16) i;
-            w += 3;
-        }
-        break;
-    case 0xA0:  // triangle fan
-        for (u32 i = 2; i < count; i++) {
-            w[0] = 0;
-            w[1] = (u16) (i - 1);
-            w[2] = (u16) i;
-            w += 3;
-        }
-        break;
-    case 0xA8:  // lines
-        primitive = RE4_GX_LINES;
-        for (u32 i = 0; i + 1 < count; i += 2) {
-            w[0] = (u16) i;
-            w[1] = (u16) (i + 1);
-            w += 2;
-        }
-        break;
-    case 0xB0:  // line strip
-        primitive = RE4_GX_LINES;
-        for (u32 i = 1; i < count; i++) {
-            w[0] = (u16) (i - 1);
-            w[1] = (u16) i;
-            w += 2;
-        }
-        break;
-    default:  // points
-        primitive = RE4_GX_POINTS;
-        for (u32 i = 0; i < count; i++) {
-            *w++ = (u16) i;
-        }
-        break;
-    }
+
+    // the draw: a draw right after another one (no state op between them) with the same
+    // primitive class, vertex layout and default matrices joins it: one renderer draw instead of
+    // one per GXBegin (a forest frame of r100 has about 16 000 GXBegins and 470 such runs). The
+    // triangle order stays.
+    const u32 primitive = kind == 0xA8 || kind == 0xB0 ? RE4_GX_LINES : kind == 0xB8 ? RE4_GX_POINTS : RE4_GX_TRIANGLES;
     Re4GxDraw d;
     d.primitive = primitive | (u32) (op & 0xF8) << 8 | vat << 16;
     d.layout = f.layout;
@@ -1091,31 +1694,36 @@ void draw(u8 op, u32 count, const u8* data, bool be)
     d.vertexOffset = base;
     d.vertexCount = count;
     d.indexOffset = first;
-    d.indexCount = (u32) ix.size() - first;
+    d.indexCount = (u32) added;
     d.matrices[0] = f.defaults[0] | f.defaults[1] << 8 | f.defaults[2] << 16 | (u32) f.defaults[3] << 24;
     d.matrices[1] = f.defaults[4] | f.defaults[5] << 8 | f.defaults[6] << 16 | (u32) f.defaults[7] << 24;
     d.matrices[2] = f.defaults[8];
-    c->view.vertexCount += count;
-    // A draw right after another one (no state op between them) with the same
-    // primitive class, vertex layout and default matrices joins it: one
-    // renderer draw instead of one per GXBegin (a forest frame of r100 has
-    // about 16 000 GXBegins and 470 such runs). The triangle order stays.
     const u32 words = sizeof(Re4GxDraw) / 4;
+    Re4GxDraw last;
+    bool join = false;
     if (c->lastDrawEnd && c->ops.size() == c->lastDrawEnd) {
-        Re4GxDraw last;
         memcpy(&last, &c->ops[c->lastDrawEnd - words], sizeof(last));
-        if ((last.primitive & 0xFF) == primitive && last.layout == d.layout && last.stride == d.stride &&
-            memcmp(last.matrices, d.matrices, sizeof(d.matrices)) == 0 &&
-            last.vertexOffset + last.vertexCount * last.stride == base && last.indexOffset + last.indexCount == first &&
-            last.vertexCount + count <= 0x10000) {
-            for (size_t i = first; i < ix.size(); i++) {
-                ix[i] = (u16) (ix[i] + last.vertexCount);
-            }
-            last.vertexCount += count;
-            last.indexCount += d.indexCount;
-            memcpy(&c->ops[c->lastDrawEnd - words], &last, sizeof(last));
-            return;
-        }
+        join = (last.primitive & 0xFF) == primitive && last.layout == d.layout && last.stride == d.stride &&
+               memcmp(last.matrices, d.matrices, sizeof(d.matrices)) == 0 &&
+               last.vertexOffset + last.vertexCount * last.stride == base && last.indexOffset + last.indexCount == first &&
+               last.vertexCount + count <= 0x10000;
+    }
+    // the vertices and the indices (relative to the first vertex of the joined draw): in a batch,
+    // or at once
+    const u32 o = join ? last.vertexCount : 0;
+    u8* out = c->vertices.data() + base;
+    u16* w = ix.data() + first;
+    if (!gJobsOn || !addEntry(vat, f, arrays, data, stable, count, be, out, w, kind, o)) {
+        gStats.skipped += convertVertices(f, arrays, data, count, be, out, gBlock);
+        writeIndices(kind, count, o, w);
+        gJobInline++;
+    }
+    c->view.vertexCount += count;
+    if (join) {
+        last.vertexCount += count;
+        last.indexCount += d.indexCount;
+        memcpy(&c->ops[c->lastDrawEnd - words], &last, sizeof(last));
+        return;
     }
     emit(RE4_GX_OP_DRAW, (const u32*) &d, words);
     c->lastDrawEnd = c->ops.size();
@@ -1362,8 +1970,10 @@ void cpWrite(u8 reg, u32 value)
         gGp.vatC[reg & 7] = value;
     } else if ((reg & 0xF0) == 0xA0) {
         gGp.arrayBase[reg & 15] = value;
+        gArrayValid[reg & 15] = false;
     } else if ((reg & 0xF0) == 0xB0) {
         gGp.arrayStride[reg & 15] = value;
+        gArrayValid[reg & 15] = false;
     }
 }
 
@@ -1420,6 +2030,7 @@ void xfIndexed(u8 op, u32 word)
     u32 index = word >> 16;
     u32 count = ((word >> 12) & 15) + 1;
     u32 address = word & 0xFFF;
+    arraysCurrent();
     const u8* src = at(::array(array), index, count * 4);
     if (src) {
         xfWrite(address, src, count, false);
@@ -1453,7 +2064,7 @@ void tlutLoad()
 // autofocus (runtime/dof.cpp): sent each time like the registers that act
 bool isAction(u8 reg)
 {
-    return reg == 0x52 || reg == 0x55 || reg == 0x56 || reg == 0x5A || (reg >= 0x60 && reg <= 0x63) ||
+    return reg == 0x52 || reg == 0x55 || reg == 0x56 || reg == 0x5A || reg == 0x5B || (reg >= 0x60 && reg <= 0x63) ||
            reg == 0x66 || reg == 0x67;
 }
 
@@ -1464,6 +2075,7 @@ void efbCopy(u32 control)
     u32 height = ((gGp.bp[0x4A] >> 10) & 0x3FF) + 1;
     if (control & (1u << 14)) {
         gStats.xfbCopies++;
+        re4_gx_peek_new_frame();  // the next GXPeekZ marks the next picture
         chunkBoundary(dest, width, height);
         return;
     }
@@ -1478,6 +2090,9 @@ void efbCopy(u32 control)
     }
     u8* marker = re4gx::memory(dest, 32);
     if (marker) {
+        // the copy writes memory a draw before it may still read (a vertex job): as on the
+        // GameCube, those draws read it first
+        re4gx::finishJobs();
         u32 serial = ++gCopySerial;
         u32 check = serial ^ dest ^ 0x5A5A5A5Au;
         memcpy(marker, kCopyMagic, 8);
@@ -1504,13 +2119,16 @@ void bpWrite(u32 word)
         gTexturesDirty = true;
     }
     switch (reg) {
-    case 0x45:  // PE_DONE: everything before it is drawn
+    case 0x45:  // PE_DONE: everything before it is drawn (the vertex jobs read their memory)
+        re4gx::finishJobs();
         re4gx::peFinish();
         return;
     case 0x47:  // PE_TOKEN: the token register, no interrupt
+        re4gx::finishJobs();
         re4gx::peToken((u16) now, false);
         return;
     case 0x48:  // PE_TOKEN_INT
+        re4gx::finishJobs();
         re4gx::peToken((u16) now, true);
         return;
     case 0x64:  // TLUT source, loaded with 0x65
@@ -1618,6 +2236,17 @@ size_t command(const u8* p, size_t n, size_t* need, bool be, int depth)
         gStats.commands++;
         callDisplayList(rd32(p + 1, be), rd32(p + 5, be), depth);
         return 9;
+    case 0x02: {  // the port's owner tag (gx_fifo.cpp re4_gx_put_owner, patch 0137)
+        *need = 17;
+        if (n < 17) {
+            return 0;
+        }
+        const u32 owner[4] = {rd32(p + 1, be), rd32(p + 5, be), rd32(p + 9, be), rd32(p + 13, be)};
+        if (chunk()) {
+            emit(RE4_GX_OP_OWNER, owner, 4);
+        }
+        return 17;
+    }
     case 0x44:  // metrics
     case 0x48:  // invalidate the vertex cache
         gStats.commands++;
@@ -1647,7 +2276,7 @@ size_t command(const u8* p, size_t n, size_t* need, bool be, int depth)
         if (chunk()) {
             bindTextures();
         }
-        draw(op, count, p + 3, be);
+        draw(op, count, p + 3, be, depth > 0);
         return *need;
     }
     if (depth == 0) {
@@ -1709,6 +2338,14 @@ void feed(const uint8_t* bytes, size_t n)
 
 extern "C" {
 
+// The app menu's "Force Performance" (core_api.cpp re4_core_set_fast_cores): 1 the game thread off
+// the slow cores, the vertex threads on the slow ones when only two cores are faster, and Android's
+// performance hint for them; 0 left to Android.
+void re4_gx_set_fast_cores(int on)
+{
+    gFastWanted.store(on ? 1 : 0);
+}
+
 void re4_gx_mark(void)
 {
     // the chunk being recorded carries the mark; the next one starts over, so
@@ -1717,6 +2354,30 @@ void re4_gx_mark(void)
         c->view.flags |= RE4_GX_CHUNK_MARK;
     }
     gNeedReset = true;
+}
+
+void re4_gx_still(int on)
+{
+    gStill.store(on != 0);
+}
+
+void re4_gx_movie(int on)
+{
+    gMovie.store(on != 0);
+}
+
+// The picture format "Native" (runtime/picture.cpp re4_view_load, patch 0214): whether the camera's projection
+// was the wide one; the first load after a display copy decides for the chunk (the game loads the projection it
+// built in the frame before, then builds the next one in its logic and loads that for its HUD).
+void re4_gx_wide(int on)
+{
+    int none = -1;
+    gWide.compare_exchange_strong(none, on ? 1 : 0);
+}
+
+int re4_gx_wide_now(void)
+{
+    return gWide.load();
 }
 
 void re4_gx_host_order_list(const void* list, unsigned int size)
@@ -1791,10 +2452,37 @@ void re4_core_gx_detach(void)
     gCv.notify_all();
 }
 
+// Tests (gx_probe.cpp): the GP done with what came so far, as after GXDrawDone (the test then
+// writes memory a draw before read).
+void re4_gx_wait_jobs(void)
+{
+    re4gx::drain();
+    re4gx::finishJobs();
+}
+
+// Tests (runtime_tests.cpp): the vertex jobs on `n` workers (started as needed, at most 3), none
+// (0: every draw on the core thread) or as by default (-1). Returns the workers running.
+int re4_gx_threads(int n)
+{
+    re4gx::finishJobs();
+    if (gWorkers < 0) {
+        gWorkers = 0;
+    }
+    if (n < 0) {
+        n = defaultWorkers();
+    }
+    if (n > 0) {
+        startWorkers(n);
+    }
+    gJobsOn = n > 0;
+    return gWorkers;
+}
+
 // Tests (runtime_tests.cpp, gx_probe.cpp): what the GP has seen.
 void re4_gx_stats(unsigned out[11])
 {
     re4gx::drain();
+    re4gx::finishJobs();
     const u32 v[11] = {gStats.bytes, gStats.commands, gStats.bp, gStats.cp, gStats.xf, gStats.xfIndexed,
                        gStats.draws, gStats.vertices, gStats.calls, gStats.unknown, gStats.dlBytes};
     memcpy(out, v, sizeof(v));
@@ -1806,6 +2494,7 @@ void re4_gx_stats(unsigned out[11])
 void re4_gx_stats2(unsigned out[9])
 {
     re4gx::drain();
+    re4gx::finishJobs();
     const u32 v[9] = {gStats.xfbCopies, gStats.texCopies, gStats.tlutLoads, gStats.textures, gStats.textureBytes,
                       gStats.chunks, gStats.dropped, gStats.hostLists, gStats.skipped};
     memcpy(out, v, sizeof(v));

@@ -10,6 +10,9 @@ extern "C" {
 #endif
 
 void re4_log(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
+/* re4_log's lines into this file as well (appended, 2 x 4 MB at most: <path>.1), the app's error
+   log without logcat; nullptr or "" stops it. The core process takes it from RE4_LOG_FILE. */
+void re4_log_file(const char* path);
 
 /* Generated stubs (stubs.cpp) report their first call through this. */
 void re4_stub_hit(const char* const* names, unsigned char* seen, int index);
@@ -28,6 +31,7 @@ void* re4_module_load(const char* name);
 /* Unloads a module library; trampolines of the others into it resolve again. */
 void re4_module_unload(const char* name);
 int re4_module_is_loaded(const char* name);
+unsigned re4_module_unloads(void);
 /* OSLink support (os_link.cpp): converts a big-endian REL header from disc to
  * host byte order in place. 1 = converted, 0 = was host order, -1 = no REL. */
 int re4_rel_header_to_host(void* rel);
@@ -84,6 +88,30 @@ void* re4_window_map(unsigned long size, int prot);
 int re4_in_window(const void* p);
 void re4_check_window(const char* what, const void* p);
 void re4_window_report(void);
+/* 32 bit on Android: reserve the address range the REL modules are loaded into (module_loader.cpp) */
+void re4_module_window_reserve(void);
+
+/* The depth the renderer took of the last pictures (the app's GX renderer, at the display copy of a
+ * picture whose chunk carries the marker BP 0x5B, which the first peek of a picture writes into the
+ * stream with the picture's number): RE4_GX_DEPTH_W x RE4_GX_DEPTH_H cells of the 24-bit GX depth at
+ * half the EFB's resolution, row 0 = the EFB's row 0. GXPeekZ answers from a map at most 8 pictures
+ * old; from an older one "in front" (0: the glow waits for the map of the new view), and "far"
+ * (0xFFFFFF) as before when there was never a map or none fresh came for 60 peeking pictures. */
+#define RE4_GX_DEPTH_W 320
+#define RE4_GX_DEPTH_H 264
+/* The renderer's map (any thread): copied. `serial` is the picture number of the marker (24 bits). */
+void re4_gx_depth_put(const unsigned int* cells, unsigned int serial);
+/* The map lives elsewhere (the core process: shared memory the app writes): `cells` and `serial`
+ * stay valid for the process's life. */
+void re4_gx_depth_source(const unsigned int* cells, const unsigned int* serial);
+/* A display copy went out: the next picture (its number for the marker), the next peek marks it. */
+void re4_gx_peek_new_frame(void);
+/* (tests) the number of the picture being made, the peeks answered "in front" from an old map */
+unsigned int re4_gx_peek_picture(void);
+unsigned int re4_gx_peek_hidden(void);
+/* (tests) peeks answered from a map / answered "far", and pictures marked */
+void re4_gx_peek_stats(unsigned int* answered, unsigned int* far, unsigned int* marked);
+
 
 /* Folder with the extracted disc files (dvd.cpp): <dir>/disc0, <dir>/disc1,
  * each with sys/fst.bin, sys/boot.bin and files/. Set by the launcher. */
@@ -101,9 +129,44 @@ void re4_host_file_close(int fd);
 const char* re4_host_file_error(void);
 /* Disc number in the virtual drive (0/1), -1 when no disc folder was found. */
 int re4_dvd_inserted_disc(void);
+/* The release of the disc in the drive, from its header sys/boot.bin (the rule of
+ * port/tools/disc_release.py; port/docs/retail-eu-plan.md). */
+#define RE4_DISC_DEBUG 0     /* G4BE08, the debug build of 2004-11-25: the port's code */
+#define RE4_DISC_RETAIL_EU 1 /* G4BP08, the European release */
+#define RE4_DISC_RETAIL_US 2 /* G4BE08 with another layout, the US release (port/docs/retail-us-plan.md) */
+#define RE4_DISC_UNKNOWN 3   /* another game, or no disc folder */
+#define RE4_DISC_RETAIL_JP 4 /* G4BJ08, the Japanese release and the Korean fan translation built on it
+                                (port/docs/retail-jp-plan.md) */
+int re4_disc_release(void);
+/* 1 with the European discs: the switch of the game patches for what only their data has (the
+ * languages, stage 4 on disc 2, r221's messages, the movie subtitles). */
+int re4_disc_retail_eu(void);
+/* 1 with the US discs (port/docs/retail-us-plan.md). */
+int re4_disc_retail_us(void);
+/* 1 with the Japanese discs, the Korean translation included (port/docs/retail-jp-plan.md). */
+int re4_disc_retail_jp(void);
+/* 1 with the Korean fan translation of the Japanese discs (its main.dol differs in two instructions:
+ * the head-loss deaths as in the US release). */
+int re4_disc_retail_kr(void);
+/* 1 with the discs of any retail release: the debug build's tools and files are missing, the
+ * re-ordered archives come in the debug build's order (runtime/formats/formats.cpp); the switch of the
+ * game patches for the data the releases share (the radio screen, map, life meter, core messages,
+ * result screens; patch 0120 ...). */
+int re4_disc_retail(void);
+/* A larger etc/core.das than the debug build's fixed place holds (the European release, patch
+ * 0117): it is read here instead, in the development half of MEM1 that nothing else uses. */
+#define RE4_MEM1_CORE_ALT_ADDR 0x81C00000u
+#define RE4_MEM1_CORE_ALT_MAX 0x00300000u
+void* re4_core_data_place(const char* name, unsigned fixedMax);
+/* A larger SS/<lang>/option.dat than the debug build's fixed place holds (the European discs'
+ * German, French, Spanish and Italian ones, patch 0121): behind the core's second place. */
+#define RE4_MEM1_OPTION_ALT_ADDR 0x81F00000u
+#define RE4_MEM1_OPTION_ALT_MAX 0x00100000u
+void* re4_option_data_place(const char* name, unsigned fixedMax);
 /* The start's reads without the frame pace (patch 0085): 1 while the next
    step of a read may follow at once, the end at the first title.dat. */
 int re4_dvd_boot_fast(void);
+int re4_dvd_header_check(const void* table, const char* name, unsigned offset, unsigned length, int depth);
 void re4_dvd_read_done(const char* name);
 
 /* Byte order (byte_order.cpp): in-place swaps of big-endian disc data. */
@@ -116,6 +179,10 @@ void re4_swap16_words(void* p, unsigned bytes);
  * decoder for every unpacked stream. */
 void re4_formats_part_loaded(const char* name, int nest, int index, const void* part, unsigned addr);
 void re4_formats_unpacked(void* dst, unsigned size);
+/* the time a file of the disc took on the game's thread (formats.cpp): the slow ones and a summary
+   every 10 s into the log; `what` "convert", "unpack" (yz2) */
+void re4_formats_timed(const char* label, unsigned bytes, long long ns, const char* what);
+long long re4_formats_now_ns(void);
 // ARAM -> main memory DMA (aram.cpp): the data at dst came from src (ARAM)
 void re4_formats_aram_copied(void* dst, const void* src, unsigned length);
 // MemorySwap (patch 0028) exchanged size bytes between MRAM and ARAM
@@ -167,9 +234,12 @@ void re4_os_run_deferred(void);
 /* AI (ai.cpp): the audio blocks of one video field (5 ms each, 200 per
  * second; vi.cpp calls it with every retrace), one block at once (tests), the
  * blocks so far. Each block runs AX's DMA callback (the DSP mixes the next,
- * runtime/dsp.cpp; the game's audio frame) and goes to the sound output. */
+ * runtime/dsp.cpp; the game's audio frame) and goes to the sound output; a
+ * hook of the game side runs before that callback (state_trace.cpp counts the
+ * sound requests waiting for the game's audio frame). */
 void re4_ai_field(void);
 void re4_ai_block(void);
+void re4_ai_set_block_hook(void (*hook)(void));
 unsigned re4_ai_blocks(void);
 /* The sound output (ai.cpp): stereo frames at 32 kHz for the device (any
  * thread; always fills `out`, returns the frames the game played), and the
@@ -193,6 +263,8 @@ void re4_audio_stats(unsigned* blocks, unsigned* fill, unsigned* overruns, unsig
 /* The DSP (dsp.cpp): command lists run, voice milliseconds mixed, the most
  * voices running in one frame since the last call. */
 void re4_dsp_stats(unsigned* lists, unsigned* voiceMs, unsigned* peakVoices);
+/* The compressor (dsp.cpp, 0x12): blocks it turned down, stereo samples still clipped. */
+void re4_dsp_loudness(unsigned* compressed, unsigned* clipped);
 /* The four channels of a Dolby Pro Logic II block (front L/R, rear L/R) by its
  * AI address: 1 and taken, else 0 (dsp.cpp). */
 int re4_dsp_surround(unsigned blockAddr, short* out);
@@ -209,6 +281,9 @@ void re4_set_frame_hook(void (*hook)(unsigned));
 void re4_pad_script_stop(void);
 /* The player is free in the room: RE4_PAD_FREE_SCRIPT starts (pad.cpp). */
 void re4_pad_script_free(void);
+/* Buttons (PAD_BUTTON_* bits) a frame hook adds to channel 0 for the frame it
+ * runs in, on top of the controller (pad.cpp; the knife swipe, knife_swipe.cpp). */
+void re4_pad_add(unsigned short buttons);
 
 /* Every OS thread and where it waits (os_thread.cpp; RE4_WAIT_TRACE=1 records
  * the places): the hang search of host/main.cpp on SIGUSR1. */
@@ -242,6 +317,18 @@ long long re4_cri_timer(void);
  * the core thread) and lets the next one start over: the app keeps the
  * pictures from there. */
 void re4_gx_mark(void);
+/* A menu screen of the game is open (1) or not (0): the chunks closed from
+ * now on carry RE4_GX_CHUNK_STILL (runtime/gx_decode.cpp). Set every frame by
+ * runtime/picture.cpp (sub screens, the memory card screens). */
+void re4_gx_still(int on);
+/* A movie plays (1) or not (0): the chunks closed from now on carry RE4_GX_CHUNK_MOVIE (runtime/gx_decode.cpp).
+ * Set every frame by runtime/picture.cpp (re4_movie_playing). */
+void re4_gx_movie(int on);
+/* The picture format "Native" (runtime/picture.cpp, patch 0214): the camera's projection was loaded wide (1) or
+ * as the game's 4:3 (0); the first call after a display copy decides the chunk's RE4_GX_CHUNK_WIDE.
+ * re4_gx_wide_now: that decision so far, -1 none yet in this chunk. */
+void re4_gx_wide(int on);
+int re4_gx_wide_now(void);
 
 #ifdef __cplusplus
 }

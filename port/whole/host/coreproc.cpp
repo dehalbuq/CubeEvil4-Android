@@ -1,9 +1,11 @@
 // The game core in a process of its own (port/docs/32bit-kernprozess.md):
-// libre4_coreproc.so in the app's library folder (Android, armeabi-v7a), and
+// libre4_coreproc.so in the app's library folder (Android, armeabi-v7a and arm64-v8a), and
 // re4_coreproc next to re4_host (the Linux check re4_core_remote_test).
 //
 // A 32-bit device whose Java heap lies on MEM1 (ART's "dalvik-main space" at
-// 0x80000000, Android 14) cannot hold the core in the app's process. The app
+// 0x80000000, Android 14) cannot hold the core in the app's process; nor can a 64-bit
+// one whose moving Java heap ("dalvik-main space (region space)") lies there (Xiaomi
+// 22081212C, Android 15, 31.10.2026: 0x77480000..0xb7480000). The app
 // (core_mode.cpp) then starts this program, which has no Java: it holds MEM1
 // at once, loads the core (libre4_main.so) and serves the app's table of core
 // calls (runtime/re4_core_client.h) over the shared memory and the socket of
@@ -64,8 +66,14 @@
 #include <vector>
 #if defined(__ANDROID__)
 #include <android/log.h>
+#if defined(__aarch64__)
+#include <android/dlext.h>
+#endif
 #else
 #include "low_memory.h"
+#if defined(__aarch64__)
+extern "C" void re4_reserve_high_memory(void);
+#endif
 #endif
 
 using namespace re4ipc;
@@ -98,9 +106,28 @@ struct Core {
     void (*gxNotify)(void (*)(void));
     void (*vsync)(int64_t);
     int (*pause)(int, int);
+    int (*instant)(int, Re4InstantInfo*);
     void (*debugMenu)(void);
     void (*setDof)(int);
+    void (*setLetterbox)(int);
+    void (*setFastCores)(int);
+    void (*setPotato)(int);
+    void (*setAim)(int);
+    void (*setSoundVolume)(int);
+    void (*restartGame)(int);
+    const char* (*discProblem)(void);
+    void (*setCheats)(int);
+    int (*cheatAction)(int);
+    int (*roomOutline)(float*, int, unsigned*);
+    void (*setLaserColour)(int);
+    void (*setViewAspect)(int);
+    void (*setHudLayout)(int, int, int);
+    void (*touch)(float, float);
+    void (*aimTurn)(float, float);
+    void (*swipe)(int);
+    void (*slash)(float);
     void (*gyro)(float, float);
+    void (*depthSource)(const unsigned*, const unsigned*);
     int (*cardList)(Re4CardFile*, int);
     int (*cardFree)(void);
     int (*cardName)(int, char*, int);
@@ -111,6 +138,7 @@ struct Core {
     long (*freeAt)(void);
     void (*addFrameHook)(void (*)(unsigned));
     void (*log)(const char*, ...);
+    void (*logFile)(const char*);
     int (*testEntry)(void);
 } core;
 
@@ -667,9 +695,57 @@ std::string addressMap(const char* when, const char* placeholder)
     return text;
 }
 
+#if defined(__ANDROID__) && defined(__aarch64__)
+// 64 bit (as the app's core_mode.cpp, milestone 12): the game keeps its addresses in 32 bits, so
+// the two core libraries load into ranges reserved at the top of the window 0x83000000..4 GB;
+// the core puts its module libraries and stacks there itself (module_loader.cpp, game_window.cpp)
+const unsigned long kWindowStart = 0x83000000ul, kWindowEnd = 0x100000000ul;
+
+void* reserveFixed(unsigned long at, unsigned long size)
+{
+    void* want = (void*) at;
+    void* p = mmap(want, size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | 0x100000 /* NOREPLACE */,
+                   -1, 0);
+    if (p == want) {
+        return p;
+    }
+    if (p != MAP_FAILED) {
+        munmap(p, size);
+    }
+    return nullptr;
+}
+
+// `name` from the app's library folder into `size` bytes below 4 GB, from the window's top down
+void* openInWindow(const char* name, unsigned long size)
+{
+    void* range = nullptr;
+    for (unsigned long at = kWindowEnd - size; !range && at >= kWindowStart; at -= 16ul << 20) {
+        range = reserveFixed(at, size);
+    }
+    if (!range) {
+        return nullptr;
+    }
+    android_dlextinfo info;
+    memset(&info, 0, sizeof(info));
+    info.flags = ANDROID_DLEXT_RESERVED_ADDRESS;
+    info.reserved_addr = range;
+    info.reserved_size = size;
+    void* handle = android_dlopen_ext(name, RTLD_NOW | RTLD_LOCAL, &info);
+    if (!handle) {
+        munmap(range, size);
+    }
+    return handle;
+}
+#endif
+
 bool loadCore(std::string& problem)
 {
-#if defined(__ANDROID__)
+#if defined(__ANDROID__) && defined(__aarch64__)
+    // the platform first, each in a range of its own, as the app's loadCore
+    if (openInWindow("libre4_platform.so", 32ul << 20)) {
+        core.main = openInWindow("libre4_main.so", 64ul << 20);
+    }
+#elif defined(__ANDROID__)
     // by name from the app's library folder (LD_LIBRARY_PATH); RTLD_LOCAL as in the app
     core.main = dlopen("libre4_main.so", RTLD_NOW | RTLD_LOCAL);
 #else
@@ -704,7 +780,26 @@ bool loadCore(std::string& problem)
     bind(core.pause, "re4_core_pause");
     bind(core.debugMenu, "re4_core_debug_menu");
     bind(core.setDof, "re4_core_set_dof");
+    bind(core.setLetterbox, "re4_core_set_letterbox");
+    bind(core.setFastCores, "re4_core_set_fast_cores");
+    bind(core.setPotato, "re4_core_set_potato");
+    bind(core.setAim, "re4_core_set_aim");
+    bind(core.setSoundVolume, "re4_core_set_sound_volume");
+    bind(core.restartGame, "re4_core_restart_game");
+    bind(core.discProblem, "re4_core_disc_problem");
+    bind(core.setCheats, "re4_core_set_cheats");
+    bind(core.cheatAction, "re4_core_cheat_action");
+    bind(core.roomOutline, "re4_core_room_outline", false);
+    bind(core.setLaserColour, "re4_core_set_laser_colour", false);
+    bind(core.setViewAspect, "re4_core_set_view_aspect", false);
+    bind(core.setHudLayout, "re4_core_set_hud_layout", false);
+    bind(core.touch, "re4_core_touch");
+    bind(core.aimTurn, "re4_core_aim_turn");
+    bind(core.swipe, "re4_core_swipe");
+    bind(core.slash, "re4_core_slash");
     bind(core.gyro, "re4_core_gyro");
+    bind(core.depthSource, "re4_core_gx_depth_source", false);
+    bind(core.instant, "re4_core_instant");
     bind(core.cardList, "re4_core_card_list");
     bind(core.cardFree, "re4_core_card_free_blocks");
     bind(core.cardName, "re4_core_card_file_name");
@@ -713,9 +808,15 @@ bool loadCore(std::string& problem)
     bind(core.frameCount, "re4_core_frame_count");
     bind(core.gameThread, "re4_core_game_thread");
     bind(core.freeAt, "re4_trace_free_at", false);
+    bind(core.logFile, "re4_log_file", false);
     if (!gMissing.empty()) {
         problem = "missing in libre4_main.so (core process): " + gMissing;
         return false;
+    }
+    // the app's error log: the core's lines into its file too (CoreBridge.setLogFile)
+    const char* logFile = getenv("RE4_LOG_FILE");
+    if (core.logFile && logFile && *logFile) {
+        core.logFile(logFile);
     }
 #if !defined(__ANDROID__)
     // the checks' entry instead of the game (tests/core_remote_probe.cpp, in libre4_host.so)
@@ -787,12 +888,84 @@ void serve()
         case kPause:
             reply(h.id, core.pause(h.a, h.b), "");
             break;
+        case kInstant: {
+            Re4InstantInfo info = {};
+            const int result = core.instant(h.a, &info);
+            reply(h.id, result, "", &info, sizeof(info));
+            break;
+        }
         case kDebugMenu:
             core.debugMenu();
             break;
         case kSetDof:
             core.setDof(h.a);
             break;
+        case kSetLetterbox:
+            core.setLetterbox(h.a);
+            break;
+        case kSetFastCores:
+            core.setFastCores(h.a);
+            break;
+        case kSetPotato:
+            core.setPotato(h.a);
+            break;
+        case kSetAim:
+            core.setAim(h.a);
+            break;
+        case kSetSoundVolume:
+            core.setSoundVolume(h.a);
+            break;
+        case kRestartGame:
+            core.restartGame(h.a);
+            break;
+        case kDiscProblem:
+            reply(h.id, 0, core.discProblem());
+            break;
+        case kSetCheats:
+            core.setCheats(h.a);
+            break;
+        case kCheatAction:
+            reply(h.id, core.cheatAction(h.a), "");
+            break;
+        case kSetLaserColour:
+            if (core.setLaserColour) core.setLaserColour(h.a);
+            break;
+        case kSetViewAspect:
+            if (core.setViewAspect) core.setViewAspect(h.a);
+            break;
+        case kSetHudLayout:
+            if (core.setHudLayout) core.setHudLayout(h.a, h.b, h.c);
+            break;
+        case kRoomOutline: {
+            const int max = h.a > 0 && h.a <= 20000 ? (int) h.a : 0;
+            std::vector<unsigned char> data(8 + (size_t) max * 20);
+            const int n = core.roomOutline ? core.roomOutline((float*) (data.data() + 8), max, (unsigned*) data.data()) : 0;
+            reply(h.id, n, "", data.data(), 8 + (size_t) (n > 0 ? n : 0) * 20);
+            break;
+        }
+        case kSwipe:
+            core.swipe(h.a);
+            break;
+        case kSlash: {
+            float tilt;
+            memcpy(&tilt, &h.a, 4);
+            core.slash(tilt);
+            break;
+        }
+        case kAimTurn: {
+            float yaw, pitch;
+            memcpy(&yaw, &h.a, 4);
+            memcpy(&pitch, &h.b, 4);
+            core.aimTurn(yaw, pitch);
+            break;
+        }
+        case kTouch: {
+            float u, v;
+            memcpy(&u, &h.a, 4);
+            memcpy(&v, &h.b, 4);
+            core.touch(u, v);
+            break;
+        }
         case kLogTail: {
             std::vector<char> text((size_t) (h.a > 0 && h.a < (1 << 20) ? h.a : 4096));
             core.logTail(text.data(), (int) text.size());
@@ -915,6 +1088,11 @@ int main(int argc, char** argv)
         }
     }
 #else
+    // Reserve above 4 GiB before allocating in the child. Game-address
+    // arithmetic must remain below 4 GiB, unlike the separate SDL process.
+#if defined(__aarch64__)
+    re4_reserve_high_memory();
+#endif
     // as the Linux loader of re4_host: everything below 0x83000000 held, MEM1 first
     unsetenv("RE4_MEM1_PLACEHOLDER");
     reserveLowMemory();
@@ -965,6 +1143,11 @@ int main(int argc, char** argv)
     }
     controlInit(gControl, (uint32_t) getpid());
     gControl->check = gCheck ? 1 : 0;
+    // the game's GXPeekZ reads the depth map the app's renderer writes into the shared memory
+    if (core.depthSource) {
+        core.depthSource((const unsigned*) ((char*) gControl + gControl->depthOffset),
+                         (const unsigned*) &gControl->depthSerial);
+    }
     installCrashHandler();
     say("ready (pid %d, MEM1 placeholder %s, libre4_main.so loaded%s)", (int) getpid(), placeholder,
         gCheck ? ", checks on" : "");

@@ -102,6 +102,12 @@ public final class CoreInputTests {
     check(in.pad()[0] == 0 && in.pad()[6] == 0 && in.pad()[5] == 0);
     in.motion(1, 0, 0, 0, 0, 0, 0.6f, 0, 0);
     check(in.pad()[0] == CoreInput.GC_A && in.pad()[5] == 0 && in.gcButton(R2) == CoreInput.GC_A);
+    in.motion(1, 0, 0, 0, 0, 0, 0.45f, 0, 0);  // resting near half way: still the same shot, no new press
+    check(in.pad()[0] == CoreInput.GC_A);
+    in.motion(1, 0, 0, 0, 0, 0, 0.3f, 0, 0);
+    check(in.pad()[0] == 0);
+    in.motion(1, 0, 0, 0, 0, 0, 0.45f, 0, 0);
+    check(in.pad()[0] == 0);
     in.motion(1, 0, 0, 0, 0, 0, 0, 0, 0);
     // L2/R2 as keys
     in.key(1, L2, true);
@@ -208,6 +214,19 @@ public final class CoreInputTests {
     check(p[5] == 255 && clampTrigger(p[5]) == 150 && p[0] == (CoreInput.GC_L | CoreInput.GC_R));
     in.motion(1, 0, 0, 0, 0, 0, 0, 0, 0);
     check(in.pad()[0] == 0 && in.pad()[5] == 0);
+    // a trigger held near the click: R stays pressed until below 70 % (jitter is no new press, which
+    // the core would show as a frame without R, 26.10.2026), and is pressed again only at 85 %
+    in.motion(1, 0, 0, 0, 0, 0, 0.86f, 0, 0);
+    check(in.pad()[0] == CoreInput.GC_R);
+    in.motion(1, 0, 0, 0, 0, 0, 0.80f, 0, 0);
+    check(in.pad()[0] == CoreInput.GC_R);
+    in.motion(1, 0, 0, 0, 0, 0, 0.86f, 0, 0);
+    check(in.pad()[0] == CoreInput.GC_R);
+    in.motion(1, 0, 0, 0, 0, 0, 0.65f, 0, 0);
+    check(in.pad()[0] == 0 && in.pad()[6] == Math.round(0.65f * 255));  // the analog value stays
+    in.motion(1, 0, 0, 0, 0, 0, 0.80f, 0, 0);
+    check(in.pad()[0] == 0);
+    in.motion(1, 0, 0, 0, 0, 0, 0, 0, 0);
     // L2/R2 as keys (digital triggers): fully pressed
     in.key(1, R2, true);
     p = in.pad();
@@ -242,7 +261,303 @@ public final class CoreInputTests {
     check(CoreInput.names(CoreInput.GC_A | CoreInput.GC_B | CoreInput.GC_START).equals("A+B+START")
         && CoreInput.names(0).equals("-"));
 
-    System.out.println("Core controller: layout, swap, alternate controls, sticks and triggers through PADClamp, "
-        + "devices: " + checks + " checks PASS");
+    // latching (the menu's comfort controls): a press of R2 holds R fully until the next press, an
+    // analog trigger only past half way (and let go below a quarter), B the same; clear lets go
+    {
+      CoreInput l = new CoreInput();
+      l.setLatch(true, true);
+      l.key(2, R2, true);
+      int[] q = l.pad();
+      check((q[0] & CoreInput.GC_R) != 0 && q[6] == 255);
+      l.key(2, R2, false);
+      q = l.pad();
+      check((q[0] & CoreInput.GC_R) != 0 && q[6] == 255);  // still held
+      l.key(2, R2, true);
+      l.pad();
+      l.key(2, R2, false);
+      q = l.pad();
+      check((q[0] & CoreInput.GC_R) == 0 && q[6] == 0);  // the second press lets go
+      l.motion(2, 0, 0, 0, 0, 0.4f, 0, 0, 0);  // L2 not past half way: no press
+      check(l.pad()[5] == 0);
+      l.motion(2, 0, 0, 0, 0, 0.6f, 0, 0, 0);
+      q = l.pad();
+      check((q[0] & CoreInput.GC_L) != 0 && q[5] == 255);
+      l.motion(2, 0, 0, 0, 0, 0.3f, 0, 0, 0);  // above a quarter: still the same press
+      l.pad();
+      l.motion(2, 0, 0, 0, 0, 0.6f, 0, 0, 0);
+      check(l.pad()[5] == 255);  // no new press: stays latched
+      l.motion(2, 0, 0, 0, 0, 0.1f, 0, 0, 0);
+      l.pad();
+      l.motion(2, 0, 0, 0, 0, 0.6f, 0, 0, 0);
+      check(l.pad()[5] == 0);  // let go and pressed again: released
+      l.motion(2, 0, 0, 0, 0, 0, 0, 0, 0);
+      l.key(2, B, true);
+      check((l.pad()[0] & CoreInput.GC_B) != 0);
+      l.key(2, B, false);
+      check((l.pad()[0] & CoreInput.GC_B) != 0);  // Leon keeps running
+      l.key(2, B, true);
+      l.pad();
+      l.key(2, B, false);
+      check((l.pad()[0] & CoreInput.GC_B) == 0);
+      // the touch controls' own buttons are not latched here (CoreTouch latches them)
+      l.touchButton(CoreInput.GC_R, true);
+      check(l.pad()[6] == 255);
+      l.touchButton(CoreInput.GC_R, false);
+      check(l.pad()[6] == 0);
+      // clear (focus lost): the latched buttons go too
+      l.key(2, R2, true);
+      l.pad();
+      l.clear();
+      check(l.pad()[6] == 0 && l.pad()[0] == 0);
+      // switched off: as before
+      l.setLatch(false, false);
+      l.key(2, R2, true);
+      check(l.pad()[6] == 255);
+      l.key(2, R2, false);
+      check(l.pad()[6] == 0);
+      // the alternate controls: L2 latches R (the weapon ready) and the right stick aims meanwhile
+      l.setAlternate(true);
+      l.setLatch(true, false);
+      l.key(2, L2, true);
+      l.pad();
+      l.key(2, L2, false);
+      l.motion(2, 0, 0, 1f, 0, 0, 0, 0, 0);
+      q = l.pad();
+      check((q[0] & CoreInput.GC_R) != 0 && q[6] == 255 && q[1] > 0 && q[3] == 0);
+    }
+    {
+      // the button mapping (29.10.2026, ActionMap): a controller with its own mapping, the game's menus with
+      // the default, the alternate controls with theirs; the keyboard
+      final int keyE = 33, keyF = 0x10001 /* the left mouse button */, keyW = 51, keyD = 32,
+          keySpace = 0x10002 /* the right one */, keyShift = 59, keyEsc = 111, keyF1 = 131, keyEnter = 66, keyDel = 67,
+          keyR = 46;
+      com.ast.re4decomp.ActionMap own = com.ast.re4decomp.ActionMap.defaults(com.ast.re4decomp.ActionMap.KIND_CONTROLLER)
+          .assign(com.ast.re4decomp.ActionMap.FIRE, new int[] {L2, R2})
+          .assign(com.ast.re4decomp.ActionMap.RUN, new int[] {L1});
+      CoreInput k = new CoreInput();
+      check(!k.ownControllerMap());
+      k.setControllerMap(com.ast.re4decomp.ActionMap.defaults(com.ast.re4decomp.ActionMap.KIND_CONTROLLER));
+      check(!k.ownControllerMap());  // the default is no mapping of its own
+      k.setControllerMap(own);
+      check(k.ownControllerMap());
+      // L1 runs, B no longer
+      check(k.key(1, L1, true) && k.pad()[0] == CoreInput.GC_B);
+      k.key(1, L1, false);
+      k.key(1, B, true);
+      check(k.pad()[0] == 0);
+      k.key(1, B, false);
+      // fire on L2 + R2: L2 holds aim and the knife, R2 then fires; R2 alone aims, A alone acts
+      k.key(1, L2, true);
+      int[] q = k.pad();
+      check(q[6] == 255 && q[5] == 255 && (q[0] & CoreInput.GC_A) == 0);
+      k.key(1, R2, true);
+      check((k.pad()[0] & CoreInput.GC_A) != 0);
+      k.key(1, L2, false);
+      q = k.pad();
+      check(q[6] == 255 && q[5] == 0 && (q[0] & CoreInput.GC_A) == 0);
+      k.key(1, R2, false);
+      // a trigger as an axis counts as its key past half way
+      k.motion(1, 0, 0, 0, 0, 0.8f, 0, 0, 0);
+      check(k.pad()[6] == 255);
+      k.motion(1, 0, 0, 0, 0, 0, 0, 0, 0);
+      check(k.pad()[6] == 0 && k.pad()[5] == 0);
+      // the D-pad stays the D-pad, the sticks stay the sticks
+      k.key(1, UP, true);
+      check(k.pad()[0] == CoreInput.GC_UP);
+      k.key(1, UP, false);
+      k.motion(1, 1f, 0, 0, 0, 0, 0, 0, 0);
+      check(k.pad()[1] > 90);
+      k.motion(1, 0, 0, 0, 0, 0, 0, 0, 0);
+      // a key held over the switch to a menu: there the default (B backs again, L1 nothing); the button it gives
+      // only in the new mapping waits until it is let go (30.10.2026: no second press from the switch)
+      k.key(1, B, true);
+      check(k.pad()[0] == 0);
+      k.setMenu(true);
+      check(k.pad()[0] == 0);
+      k.key(1, B, false);
+      check(k.pad()[0] == 0);
+      k.key(1, B, true);
+      check(k.pad()[0] == CoreInput.GC_B);  // pressed again: B in the menu
+      k.key(1, B, false);
+      k.key(1, L1, true);
+      check(k.pad()[0] == 0);
+      k.setMenu(false);
+      check(k.pad()[0] == CoreInput.GC_B);  // L1 held as the menu closes: Leon runs at once (tester, 30.10.2026)
+      k.key(1, L1, false);
+      check(k.pad()[0] == 0);
+      // a pressed action (here the inventory on L1) still waits until the key is let go
+      k.setControllerMap(own.assign(com.ast.re4decomp.ActionMap.INVENTORY, new int[] {L1}));
+      k.setMenu(true);
+      k.key(1, L1, true);
+      check(k.pad()[0] == 0);
+      k.setMenu(false);
+      check(k.pad()[0] == 0);
+      k.key(1, L1, false);
+      check(k.pad()[0] == 0);
+      k.key(1, L1, true);
+      check(k.pad()[0] == CoreInput.GC_Y);
+      k.key(1, L1, false);
+      check(k.pad()[0] == 0);
+      // R (the weapon ready, here on L1) held over the closing comes at once as well
+      k.setControllerMap(own.assign(com.ast.re4decomp.ActionMap.AIM, new int[] {L1}));
+      k.setMenu(true);
+      k.key(1, L1, true);
+      check(k.pad()[0] == 0);
+      k.setMenu(false);
+      check((k.pad()[0] & CoreInput.GC_R) != 0);
+      k.key(1, L1, false);
+      check(k.pad()[0] == 0);
+      k.setControllerMap(own);
+      // a button both mappings give stays held over the switch (here the D-pad)
+      k.key(1, UP, true);
+      check(k.pad()[0] == CoreInput.GC_UP);
+      k.setMenu(true);
+      check(k.pad()[0] == CoreInput.GC_UP);
+      k.setMenu(false);
+      check(k.pad()[0] == CoreInput.GC_UP);
+      k.key(1, UP, false);
+      check(k.pad()[0] == 0);
+      // the app's menu: SELECT, or where the mapping puts it; R3 the graphics capture without a function
+      check(k.appFunctionOf(SELECT, false) == CoreInput.APP_MENU && k.appFunctionOf(R3, false) == CoreInput.APP_GX_DUMP);
+      k.setControllerMap(own.assign(com.ast.re4decomp.ActionMap.APP_MENU, new int[] {R3}));
+      check(k.appFunctionOf(R3, false) == CoreInput.APP_MENU && k.appFunctionOf(SELECT, false) == CoreInput.APP_NONE);
+      k.setMenu(true);
+      check(k.appFunctionOf(SELECT, false) == CoreInput.APP_MENU);  // menus: the default
+      k.setMenu(false);
+      // latching through the mapping (L1 runs)
+      k.setControllerMap(own);
+      k.setLatch(false, true);
+      k.key(1, L1, true);
+      k.pad();
+      k.key(1, L1, false);
+      check(k.pad()[0] == CoreInput.GC_B);
+      k.key(1, L1, true);
+      k.pad();
+      k.key(1, L1, false);
+      check(k.pad()[0] == 0);
+      k.setLatch(false, false);
+      // the alternate controls keep their layout
+      k.setAlternate(true);
+      check(k.gcButton(R1) == CoreInput.GC_Y && k.gcButton(L1) == CoreInput.GC_L);
+      k.setAlternate(false);
+      k.clear();
+
+      // the keyboard and the mouse: WASD the stick, E acts, Shift runs, the right button aims, right + left
+      // fire (a keyboard and the mouse are one device: right + R reloads), Esc options, F1 the app
+      CoreInput kb = new CoreInput();
+      check(kb.keyboardKey(5, keyW, true));
+      q = kb.pad();
+      check(q[1] == 0 && q[2] > 90);
+      kb.keyboardKey(5, keyD, true);
+      q = kb.pad();
+      check(q[1] > 60 && q[2] > 60);
+      kb.keyboardKey(5, keyW, false);
+      kb.keyboardKey(5, keyD, false);
+      check(kb.pad()[1] == 0 && kb.pad()[2] == 0);
+      kb.keyboardKey(5, keyE, true);
+      check(kb.pad()[0] == CoreInput.GC_A);
+      kb.keyboardKey(5, keyE, false);
+      kb.keyboardKey(5, keyF, true);
+      check(kb.pad()[0] == 0);  // fire's key alone does nothing
+      kb.keyboardKey(5, keySpace, true);
+      q = kb.pad();
+      check(q[6] == 255 && (q[0] & CoreInput.GC_A) != 0);
+      kb.keyboardKey(5, keyF, false);
+      kb.keyboardKey(7, keyR, true);  // R on another device (the keyboard), the right button held on the mouse
+      q = kb.pad();
+      check(q[6] == 255 && (q[0] & CoreInput.GC_B) != 0);
+      kb.keyboardKey(7, keyR, false);
+      kb.keyboardKey(5, keySpace, false);
+      // the mouse moving: the C stick (the camera)
+      kb.mouseLook(1f, 0);
+      check(kb.pad()[3] > 80);
+      kb.mouseLook(0, 0);
+      check(kb.pad()[3] == 0);
+      kb.keyboardKey(5, keyShift, true);
+      check(kb.pad()[0] == CoreInput.GC_B);
+      kb.keyboardKey(5, keyShift, false);
+      check(kb.keyboardKey(5, keyEsc, true) && kb.pad()[0] == CoreInput.GC_START);
+      kb.keyboardKey(5, keyEsc, false);
+      check(kb.appFunctionOf(keyF1, true) == CoreInput.APP_MENU && kb.appFunctionOf(keyE, true) == CoreInput.APP_NONE);
+      // the fixed keys: arrows the D-pad, Enter A, Backspace B
+      kb.keyboardKey(5, UP, true);
+      kb.keyboardKey(5, keyEnter, true);
+      check(kb.pad()[0] == (CoreInput.GC_UP | CoreInput.GC_A));
+      kb.keyboardKey(5, UP, false);
+      kb.keyboardKey(5, keyEnter, false);
+      check(kb.keyboardKey(5, keyDel, true) && kb.pad()[0] == CoreInput.GC_B);
+      kb.keyboardKey(5, keyDel, false);
+      // a key of no action is not the game's
+      check(!kb.keyboardKey(5, 50 /* V */, true));
+      // the keyboard's own mapping in the game, the default in the menus
+      kb.setKeyboardMap(com.ast.re4decomp.ActionMap.defaults(com.ast.re4decomp.ActionMap.KIND_KEYBOARD)
+          .assign(com.ast.re4decomp.ActionMap.ACTION, new int[] {50}));
+      check(kb.pad()[0] == CoreInput.GC_A);  // V held: now the action
+      kb.setMenu(true);
+      check(kb.pad()[0] == 0);
+      kb.keyboardKey(5, 50, false);
+      kb.keyboardKey(5, keyE, true);
+      check(kb.pad()[0] == CoreInput.GC_A);  // E confirms in the menus
+      kb.keyboardKey(5, keyE, false);
+      kb.setMenu(false);
+      // a keyboard next to a controller: the keyboard's mapping, the controller's layout
+      kb.key(1, A, true);
+      kb.keyboardKey(5, keyShift, true);
+      check(kb.pad()[0] == (CoreInput.GC_A | CoreInput.GC_B));
+    }
+    // the menu's stick dead zone and range (0.99.2, issue #168): the defaults leave every value as it was
+    {
+      CoreInput plain = new CoreInput(), shaped = new CoreInput();
+      shaped.setStickShape(0, 100);
+      for (float x = -1f; x <= 1f; x += 0.05f) {
+        for (float y = -1f; y <= 1f; y += 0.05f) {
+          plain.motion(1, x, y, -y, x, 0, 0, 0, 0);
+          shaped.motion(1, x, y, -y, x, 0, 0, 0, 0);
+          check(java.util.Arrays.equals(plain.pad(), shaped.pad()));
+        }
+      }
+      // a square controller's corner as before as well
+      plain.motion(1, 1f, -1f, 0, 0, 0, 0, 0, 0);
+      check(plain.pad()[1] == 101 && plain.pad()[2] == 101);
+      // the dead zone is round: 0.1 each way (0.14 from the centre) is at rest with 15 %, a diagonal past it keeps
+      // its direction
+      CoreInput dz = new CoreInput();
+      dz.setStickShape(15, 100);
+      dz.motion(1, 0.1f, 0.1f, 0, 0, 0, 0, 0, 0);
+      check(dz.pad()[1] == 0 && dz.pad()[2] == 0);
+      dz.motion(1, 0.5f, -0.5f, 0, 0, 0, 0, 0, 0);
+      int[] d = dz.pad();
+      check(d[1] == d[2] && d[1] > 0);
+      // full deflection stays full
+      dz.motion(1, 0f, -1f, 0, 0, 0, 0, 0, 0);
+      check(dz.pad()[2] == 101);
+      // the range: a stick that reaches only 60 % of its way passes the walking threshold (game: 30 of 72 after
+      // the clamp) with a range of 70 %, not without; at 70 % it counts as pushed all the way
+      int[] short60 = stick(0f, -0.6f);
+      CoreInput rg = new CoreInput();
+      rg.setStickShape(0, 70);
+      rg.motion(1, 0f, -0.6f, 0, 0, 0, 0, 0, 0);
+      int[] longer = rg.pad();
+      check(mainStick(longer)[1] > mainStick(short60)[1]);
+      rg.motion(1, 0f, -0.7f, 0, 0, 0, 0, 0, 0);
+      check(rg.pad()[2] == 101 && mainStick(rg.pad())[1] == 72);
+      // a half-pushed stick at 45 degrees with the range: the diagonal is kept (no tilt to one axis)
+      rg.motion(1, 0.3f, -0.3f, 0, 0, 0, 0, 0, 0);
+      check(rg.pad()[1] == rg.pad()[2]);
+      // the right stick too, the triggers not
+      rg.motion(1, 0, 0, 0.7f, 0, 0.5f, 0, 0, 0);
+      check(rg.pad()[3] == 92 && rg.pad()[5] == Math.round(0.5f * 255f));
+      // out of range settings fall back: dead zone at most 30, a range below 50 or above 100 is 100
+      CoreInput bad = new CoreInput();
+      bad.setStickShape(80, 20);
+      check(bad.deadZone() == CoreInput.DEAD_ZONE_MAX && bad.range() == 100);
+      // the touch controls' sticks are not shaped
+      CoreInput touch = new CoreInput();
+      touch.setStickShape(30, 50);
+      touch.touchStick(false, 0.2f, 0f);
+      check(touch.pad()[1] == Math.round(0.2f * 101f));
+    }
+    System.out.println("Core controller: layout, swap, alternate controls, free keys, sticks and triggers through "
+        + "PADClamp, devices, button mapping, keyboard, stick dead zone and range: " + checks + " checks PASS");
   }
 }

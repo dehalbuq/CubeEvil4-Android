@@ -1,0 +1,49 @@
+name: R36S low-memory profile unit checks
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/r36s-lowmem-profile.yml"
+      - "port/android-decomp/app/src/main/cpp/gx_r36s_profile.h"
+      - "port/android-decomp/app/src/main/cpp/gx_renderer.cpp"
+      - "port/android-decomp/app/src/main/cpp/gx_gl.cpp"
+      - "port/android-decomp/tests/r36s_lowmem_profile_test.cpp"
+  push:
+    branches:
+      - experiment/r36s-upstream-0995-lowmem
+    paths:
+      - ".github/workflows/r36s-lowmem-profile.yml"
+      - "port/android-decomp/app/src/main/cpp/gx_r36s_profile.h"
+      - "port/android-decomp/app/src/main/cpp/gx_renderer.cpp"
+      - "port/android-decomp/app/src/main/cpp/gx_gl.cpp"
+      - "port/android-decomp/tests/r36s_lowmem_profile_test.cpp"
+
+permissions:
+  contents: read
+
+jobs:
+  host-profile-checks:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile R36S policy tests
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -Wall -Wextra -Werror -pedantic -O2 \
+            -Iport/android-decomp/app/src/main/cpp \
+            port/android-decomp/tests/r36s_lowmem_profile_test.cpp \
+            -o /tmp/r36s_lowmem_profile_test
+          /tmp/r36s_lowmem_profile_test
+          echo 'R36S low-resource policy checks passed'
+      - name: Verify updated GLES renderer compiles without game assets
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libgles2-mesa-dev libegl1-mesa-dev
+          g++ -std=c++17 -Wall -Wextra -Werror -fsyntax-only \
+            -Iport/android-decomp/app/src/main/cpp \
+            -Iport/whole/runtime \
+            port/android-decomp/app/src/main/cpp/gx_renderer.cpp \
+            port/android-decomp/app/src/main/cpp/gx_gl.cpp
+          echo 'GLES renderer syntax checks passed'

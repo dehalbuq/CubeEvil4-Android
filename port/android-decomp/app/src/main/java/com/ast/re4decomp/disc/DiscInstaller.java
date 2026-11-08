@@ -11,7 +11,8 @@ public final class DiscInstaller {
   private DiscInstaller() {}
   public static void recover(File root) throws IOException {
     if (!root.isDirectory() && !root.mkdirs())
-      throw new IOException("Data directory is unavailable");
+      throw new IOException("The app cannot make its data folder (" + root + "). Please check that the device has free "
+          + "storage, then restart the app.");
     for (int n = 1; n <= 2; n++) {
       File current = new File(root, "disc" + n),
            old = new File(root, ".old-disc" + n);
@@ -30,20 +31,52 @@ public final class DiscInstaller {
     delete(new File(root, ".incoming"));
   }
   public static boolean ready(File disc, int number) {
-    Properties p = new Properties();
-    try (InputStream r =
-             new FileInputStream(new File(disc, "ready.properties"))) {
-      p.load(r);
-      return "1".equals(p.getProperty("format")) &&
-          "G4BE08".equals(p.getProperty("id")) &&
-          Integer.toString(number).equals(p.getProperty("disc")) &&
-          Integer.toString(number == 1 ? 111 : 5)
-              .equals(p.getProperty("references")) &&
-          new File(disc, "sys/main.dol").length() == 2554432 &&
-          new File(disc, "manifest.tsv").isFile();
-    } catch (IOException e) {
+    String release = release(disc);
+    Properties p = properties(disc);
+    if (release == null || p == null)
       return false;
+    boolean debug = GameCubeDisc.DEBUG.equals(release);
+    String references = p.getProperty("references", "");
+    return "1".equals(p.getProperty("format")) &&
+        GameCubeDisc.gameId(release).equals(p.getProperty("id")) &&
+        Integer.toString(number).equals(p.getProperty("disc")) &&
+        (debug ? Integer.toString(number == 1 ? 111 : 5).equals(references) : references.matches("[1-9][0-9]{0,4}")) &&
+        new File(disc, "sys/main.dol").length() == GameCubeDisc.dolSize(release) &&
+        new File(disc, "manifest.tsv").isFile();
+  }
+  /**
+   * The release of an imported disc folder (GameCubeDisc.DEBUG, EUROPEAN, US, JAPANESE or KOREAN); imports before the
+   * European discs (26.10.2026) name none and are the debug build's. Null without an import.
+   */
+  public static String release(File disc) {
+    Properties p = properties(disc);
+    if (p == null)
+      return null;
+    String release = p.getProperty("release", GameCubeDisc.DEBUG);
+    return GameCubeDisc.DEBUG.equals(release) || GameCubeDisc.EUROPEAN.equals(release) ||
+        GameCubeDisc.US.equals(release) || GameCubeDisc.JAPANESE.equals(release) || GameCubeDisc.KOREAN.equals(release)
+        ? release : null;
+  }
+  private static Properties properties(File disc) {
+    Properties p = new Properties();
+    try (InputStream r = new FileInputStream(new File(disc, "ready.properties"))) {
+      p.load(r);
+      return p;
+    } catch (IOException e) {
+      return null;
     }
+  }
+  /**
+   * Both discs of the import folder ready and of one release (the game reads both; a debug disc
+   * next to a European one would mix two different builds' data).
+   */
+  public static boolean sameRelease(File root) {
+    String one = release(new File(root, "disc1")), two = release(new File(root, "disc2"));
+    return one != null && one.equals(two);
+  }
+  /** The app's catalog of a release, for install (references-eu.tsv ...). */
+  public interface Catalogs {
+    ReferenceCatalog forRelease(String release) throws IOException;
   }
   /**
    * Core mode: a complete import with the disc header and file system table
@@ -57,6 +90,12 @@ public final class DiscInstaller {
                              ReferenceCatalog catalog,
                              GameCubeDisc.Progress progress)
       throws IOException {
+    install(source, root, expectedDisc, release -> catalog, progress);
+  }
+  public static void install(File source, File root, int expectedDisc,
+                             Catalogs catalogs,
+                             GameCubeDisc.Progress progress)
+      throws IOException {
     File work = new File(root, ".work-disc" + expectedDisc);
     File target = new File(root, "disc" + expectedDisc),
          old = new File(root, ".old-disc" + expectedDisc);
@@ -64,7 +103,7 @@ public final class DiscInstaller {
     try (GameCubeDisc disc = new GameCubeDisc(source)) {
       if (disc.discNumber != expectedDisc)
         throw new IOException("Please import Disc " + expectedDisc + " selected");
-      disc.validate(catalog, progress);
+      disc.validate(catalogs.forRelease(disc.release), progress);
       if (root.getUsableSpace() < disc.extractionSize() + 64L * 1024 * 1024)
         throw new IOException(
             "Not enough free storage for the extracted data");

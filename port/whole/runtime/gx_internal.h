@@ -18,6 +18,9 @@ uint8_t* memory(uint32_t physical, uint32_t size);
 // The same for a run of bytes: the host address of `physical` and in
 // *available how many bytes from there on are memory (0 and NULL: none).
 uint8_t* memorySpan(uint32_t physical, uint32_t* available);
+// Counts the windows of port memory given out so far: what memorySpan answers for an address
+// only changes when this does (the decoder keeps its array spans until then).
+uint32_t aliasGeneration();
 
 // The address word of a display list call: the SDK writes the list pointer as
 // it is (GXCallDisplayList); on the GameCube the GP masks it to physical.
@@ -35,6 +38,9 @@ void peToken(uint16_t token, bool interrupt);
 void feed(const uint8_t* bytes, size_t n);
 // Works through what has arrived (a command cut off waits for its bytes).
 void drain();
+// Waits until the vertex jobs of the draws so far are converted (the core thread helps): before
+// memory the GP read may change (a display list recorded over it).
+void finishJobs();
 
 }  // namespace re4gx
 
