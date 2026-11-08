@@ -428,6 +428,20 @@ int main(int argc,char**argv) {
     re4ipc::shutdown(1000);
     return 4;
   }
+  // The upstream 0.99.5 core implements a visual-only Potato mode.
+  // Bit0: weather, bit1: special effects, bits2-3: particle reduction,
+  // bit4: light/shadow effects. Do not change AI, collisions or saves.
+  // Never silently carry the legacy custom renderer's removed LOW_SPEC flags.
+  int potatoMask=0;
+  if(const char* requested=std::getenv("RE4_R36S_POTATO_MASK")){
+    char* end=nullptr;
+    const long parsed=std::strtol(requested,&end,10);
+    if(end!=requested && *end=='\0' && parsed>=0 && parsed<=31)
+      potatoMask=static_cast<int>(parsed);
+    else std::fprintf(stderr,"R36S_POTATO_INVALID=%s (valid 0..31; using 0)\n",requested);
+  }
+  re4ipc_set_potato(potatoMask);
+  std::fprintf(stderr,"R36S_POTATO_MASK=%d (0 preserves all effects)\n",potatoMask);
   const int corePid=re4ipc::pid();
   printf("CORE_PID=%d\n",corePid);
   TRACE_MARK("sdl_init",0,0);
