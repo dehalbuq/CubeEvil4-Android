@@ -92,8 +92,8 @@ requests safe exit of a responsive frontend.
 
 The executable now calls the current upstream `re4ipc_set_potato(mask)`
 API, not a removed legacy R36S graphics define. The installation script
-defaults to `RE4_R36S_POTATO_MASK=3` (disable weather and special
-visual effects during ordinary gameplay). The original game rules,
+defaults to `RE4_R36S_POTATO_MASK=31` (aggressive reduction of weather,
+special effects, particles, and optional light/shadow effects during ordinary gameplay). The original game rules,
 collision and AI are not changed by this rendering switch.
 
 For a controlled A/B test, override before launch:
