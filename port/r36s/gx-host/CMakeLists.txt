@@ -84,7 +84,9 @@ add_executable(r36s_game_ps2
   "${RE4_WHOLE_RUNTIME}/core_ipc_client.cpp"
 )
 target_include_directories(r36s_game_ps2 PRIVATE "${RE4_ANDROID_CPP}" "${RE4_WHOLE_RUNTIME}")
-target_compile_definitions(r36s_game_ps2 PRIVATE RE4_R36S_LOW_SPEC=1 RE4_R36S_SHADER_CACHE=1)
+# RE4_R36S_LOW_SPEC belongs to pre-0.99.5 renderer only; the new backend
+# uses the safe runtime RE4_R36S_LOW_MEM policy instead.
+target_compile_definitions(r36s_game_ps2 PRIVATE RE4_R36S_SHADER_CACHE=1)
 target_compile_options(r36s_game_ps2 PRIVATE -O2 -Wall -Wextra -ffp-contract=off -g -fno-omit-frame-pointer)
 target_link_libraries(r36s_game_ps2 PRIVATE PkgConfig::SDL2 "${GLESV2_LIB}" dl pthread)
 target_link_options(r36s_game_ps2 PRIVATE -rdynamic -Wl,--build-id)
@@ -106,7 +108,7 @@ set(RE4_R36S_A35_SOURCES
 function(re4_a35_target target half_efb)
   add_executable(${target} ${RE4_R36S_A35_SOURCES})
   target_include_directories(${target} PRIVATE "${RE4_ANDROID_CPP}" "${RE4_WHOLE_RUNTIME}")
-  target_compile_definitions(${target} PRIVATE RE4_R36S_LOW_SPEC=1 RE4_R36S_SHADER_CACHE=1 RE4_R36S_A35_TARGET=1)
+  target_compile_definitions(${target} PRIVATE RE4_R36S_SHADER_CACHE=1 RE4_R36S_A35_TARGET=1)
   if(half_efb)
     target_compile_definitions(${target} PRIVATE RE4_R36S_HALF_EFB=1)
   endif()
