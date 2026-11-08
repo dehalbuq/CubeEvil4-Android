@@ -4,6 +4,7 @@
 #include "gx_fixed_shaders.h"
 
 #include "gx_gl_shader.h"
+#include "gx_r36s_profile.h"
 #include "gx_texture.h"
 #include "re4_gx_frame.h"
 
@@ -2841,12 +2842,28 @@ void GlRenderer::ApplyTestEnvironment() {
   psxOn = psx && *psx == '1';
   const char *flares = getenv("RE4_GX_FLARES");  // the lens flares from the start (gx_chunk_render, tests)
   flaresOn = flares && *flares == '1';
+  // Cap GPU driver program residency only in the opt-in R36S profile.
+  // Disk shader binaries still work. No shader key or rendering result changes.
+  if (r36s::LowMemory()) {
+    maxPrograms = r36s::kProgramLimit;
+    maxMerged = r36s::kMergedProgramLimit;
+    tvFilter = false;
+    psxOn = false;
+    flaresOn = false;
+  }
   if (const char *limit = getenv("RE4_GX_MAX_PROGRAMS")) {
     const long n = std::strtol(limit, nullptr, 10);
     if (n >= 4) {
       maxPrograms = static_cast<std::size_t>(n);
       maxMerged = static_cast<std::size_t>(n);
     }
+  }
+  // Never allow an environment override to disable the R36S RAM ceiling.
+  if (r36s::LowMemory()) {
+    maxPrograms = std::min(maxPrograms, r36s::kProgramLimit);
+    maxMerged = std::min(maxMerged, r36s::kMergedProgramLimit);
+    GXLOG("R36S lowmem: GLES shader residency capped (%zu regular, %zu merged)",
+          maxPrograms, maxMerged);
   }
 }
 
