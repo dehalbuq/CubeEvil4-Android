@@ -65,6 +65,9 @@ jobs:
             -I port/r36s/gx-host port/r36s/gx-host/test_showcase_exit_controls.cpp \
             -o /tmp/test_showcase_exit_controls $(pkg-config --libs sdl2)
           /tmp/test_showcase_exit_controls
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror -I port/r36s/gx-host \
+            port/r36s/gx-host/test_showcase_clean_data.cpp -o /tmp/test_showcase_clean_data
+          /tmp/test_showcase_clean_data
       - name: Collect native ARM64 frontend files
         run: |
           mkdir -p artifact/frontend
