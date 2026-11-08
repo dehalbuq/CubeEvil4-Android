@@ -6,9 +6,9 @@ cd "$HERE"
 mkdir -p "$HERE/logs" "$HERE/cache/shader_binaries"
 LD_LIBRARY_PATH="$HERE:$(printenv LD_LIBRARY_PATH || true)"
 RE4_R36S_LOW_MEM="$(printenv RE4_R36S_LOW_MEM || echo 1)"
-# The 0.99.5 core disables only weather and special visual effects at mask 3.
-# 0 keeps all effects; 31 is a more aggressive A/B test.
-RE4_R36S_POTATO_MASK="$(printenv RE4_R36S_POTATO_MASK || echo 3)"
+# Default aggressive visual-reduction profile (31); 0 restores all effects.
+# Override RE4_R36S_POTATO_MASK explicitly for A/B comparisons.
+RE4_R36S_POTATO_MASK="$(printenv RE4_R36S_POTATO_MASK || echo 31)"
 RE4_GX_BASEVERTEX="$(printenv RE4_GX_BASEVERTEX || echo 0)"
 RE4_R36S_SWAP_MODE="$(printenv RE4_R36S_SWAP_MODE || echo 5)"
 RE4_R36S_SHADER_CACHE_DIR="$HERE/cache/shader_binaries"
