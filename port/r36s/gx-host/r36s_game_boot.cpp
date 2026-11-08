@@ -189,14 +189,9 @@ void reportStats(const re4gx::GxRenderer& r){
 }
 
 #ifdef RE4_R36S_SHOWCASE
-// Full-screen fit on the R36S 4:3 display: use the ENTIRE source width,
-// crop ONLY the black letterbox rows, and stretch the 16:9 active picture
-// vertically to fill 640x480. Deliberately distorts proportions rather than
-// losing gameplay objects or HUD at the left and right edges.
-void showcaseAspect(re4gx::GxRenderer& renderer) {
-  renderer.SetShowcaseDisplayCrop(0.0f,0.125f,1.0f,0.75f);
-}
-
+// CubeEvil4 0.99.5 GX renders into a 4:3 SDL viewport directly.
+// Removed the old custom crop setter: it no longer exists in the updated
+// renderer and stretching a 16:9 gameplay region would distort the picture.
 // Sound is PCM 32000 Hz, S16 stereo in the core IPC ring (core_ipc.cpp).
 // Never read it on the graphics thread: GX rendering can take 150+ ms/frame.
 // SDL_QueueAudio is fed independently to keep latency below ~125ms.
@@ -509,7 +504,6 @@ int main(int argc,char**argv) {
       puts("SHADER_CACHE_NOTE=first_run_compiles_new_shaders_next_run_can_load_binary_cache");
 #endif
 #ifdef RE4_R36S_SHOWCASE
-      showcaseAspect(renderer);
       ShowcaseAudio showcaseAudio;
       showcaseAudio.start();
       bool showcaseMenu=false;
