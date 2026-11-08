@@ -45,56 +45,74 @@ struct ShowcaseCleanData {
   }
   const std::string& path() const {return root;}
 
+  // Preserve the original disc byte-for-byte. The debug text setting can
+  // be present in either the conventional disc0/files/ tree or a flat disc0/
+  // layout. Report the real reason when creating the overlay fails.
+  std::string error;
   bool prepare(const std::string &coreDir, const std::string &dataDir) {
     namespace fs=std::filesystem;
     cleanup();
+    error.clear();
     try {
       const fs::path original=fs::absolute(fs::path(dataDir));
-      const fs::path config=original/"disc0"/"files"/"debug"/"config.txt";
+      const fs::path disc0=original/"disc0";
+      const bool withFiles=fs::is_directory(disc0/"files");
+      const fs::path files=withFiles?disc0/"files":disc0;
+      const fs::path config=files/"debug"/"config.txt";
       std::ifstream source(config,std::ios::binary);
-      if(!source)return false;
-      std::string originalConfig(std::istreambuf_iterator<char>{source},
-                                 std::istreambuf_iterator<char>{});
-      if(!disableDebugPrintPage(originalConfig))return false;
+      if(!source){error="debug_config_unavailable: "+config.string();return false;}
+      std::string patched(std::istreambuf_iterator<char>{source},
+                          std::istreambuf_iterator<char>{});
+      if(!disableDebugPrintPage(patched)){
+        error="PRINT_PAGE_tag_absent_or_non_numeric: "+config.string();
+        return false;
+      }
       const fs::path cache=fs::path(coreDir)/"cache";
       fs::create_directories(cache);
       std::string pattern=(cache/"showcase-clean-XXXXXX").string();
       std::vector<char> tmp(pattern.begin(),pattern.end());
       tmp.push_back('\0');
       char* created=mkdtemp(tmp.data());
-      if(!created)return false;
+      if(!created){error="mkdtemp_failed: "+pattern;return false;}
       root=created;
-      const fs::path dst(root);
-      fs::create_directories(dst/"disc0"/"files"/"debug");
-      // Mirror the original extracted ISO directory structure by symlinks,
-      // *not* copies. Only the specific debug config is new and writable.
+      const fs::path dst(root),dstDisc0=dst/"disc0";
+      const fs::path dstFiles=withFiles?dstDisc0/"files":dstDisc0;
+      fs::create_directories(dstFiles/"debug");
       for(const auto& item:fs::directory_iterator(original)) {
         if(item.path().filename()=="disc0")continue;
         fs::create_symlink(item.path(),dst/item.path().filename());
       }
-      const fs::path disc0=original/"disc0";
       for(const auto& item:fs::directory_iterator(disc0)) {
-        if(item.path().filename()=="files")continue;
-        fs::create_symlink(item.path(),dst/"disc0"/item.path().filename());
+        if(item.path().filename()==(withFiles?"files":"debug"))continue;
+        fs::create_symlink(item.path(),dstDisc0/item.path().filename());
       }
-      const fs::path files=disc0/"files";
-      for(const auto& item:fs::directory_iterator(files)) {
-        if(item.path().filename()=="debug")continue;
-        fs::create_symlink(item.path(),dst/"disc0"/"files"/item.path().filename());
+      if(withFiles) {
+        for(const auto& item:fs::directory_iterator(files)) {
+          if(item.path().filename()=="debug")continue;
+          fs::create_symlink(item.path(),dstFiles/item.path().filename());
+        }
       }
-      const fs::path debug=files/"debug";
-      for(const auto& item:fs::directory_iterator(debug)) {
+      for(const auto& item:fs::directory_iterator(files/"debug")) {
         if(item.path().filename()=="config.txt")continue;
-        fs::create_symlink(item.path(),dst/"disc0"/"files"/"debug"/item.path().filename());
+        fs::create_symlink(item.path(),dstFiles/"debug"/item.path().filename());
       }
-      std::ofstream target(dst/"disc0"/"files"/"debug"/"config.txt",
+      std::ofstream target(dstFiles/"debug"/"config.txt",
                            std::ios::binary|std::ios::trunc);
-      if(!target) {cleanup();return false;}
-      target.write(originalConfig.data(),static_cast<std::streamsize>(originalConfig.size()));
+      if(!target) {
+        error="overlay_write_open_failed";
+        cleanup();
+        return false;
+      }
+      target.write(patched.data(),static_cast<std::streamsize>(patched.size()));
       target.close();
-      if(!target) {cleanup();return false;}
+      if(!target) {
+        error="overlay_write_failed";
+        cleanup();
+        return false;
+      }
       return true;
-    }catch(const std::exception&){
+    }catch(const std::exception& e){
+      error=std::string("overlay_exception: ")+e.what();
       cleanup();
       return false;
     }
