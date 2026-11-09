@@ -32,7 +32,7 @@ sinteticos RE4NX no PC, mais 9 casos negativos/positivos do NSO0 e
 3 casos de IPC/handles; 3 niveis de memoria (64/256/512 MiB) com leitura
 real de paginas, verificacao estatica do ELF AArch64, e compilacao de
 GLSL ES3 via Mesa **se as dependencias estiverem instaladas**. No GitHub
-Actions ARM64 o GLES3 e obrigatorio e a suite Phase2/3 executa nativamente.
+Actions ARM64 o GLES3 e obrigatorio e a suite Phase2/3/4 executa nativamente.
 
 ## Como repetir a coleta no R36S (opcional)
 
@@ -101,20 +101,21 @@ abre um contexto EGL/OpenGL ES 3 em modo software, valida shaders GLSL ES
 **GitHub Actions:** o pacote inclui `.github/workflows/darkosre-cloudlab.yml`.
 Ao adicionar `r36s_cloudlab/` e esse workflow na raiz de um repositorio
 GitHub, voce pode disparar `Run workflow` no Actions. O job usa
-`ubuntu-24.04-arm`: Linux ARM64 nativo, executa os binarios Phase2/3 e
+`ubuntu-24.04-arm`: Linux ARM64 nativo, executa os binarios Phase2/3/4 e
 verifica os resultados automaticamente, guardando logs como artifacts.
 Ele nao precisa do ZIP pessoal `darkosre-cloudprofile` no repositorio publico:
 usamos apenas JSON tecnico minimizado, que deve ser revisto antes de publicar.
 O job tambem compila e executa novamente em um container **Debian trixie** com
 limite estrito de 895 MiB de cgroup e sem swap; o kernel continua sendo o do host.
 
-**IMPORTANTE**: o workflow esta apenas dentro do ZIP. Ele **nao foi instalado
-nem executado no GitHub** por esta entrega. Para ativar CI, coloque a pasta
-`r36s_cloudlab/` na raiz do seu repositorio e copie o workflow do pacote para
-`.github/workflows/darkosre-cloudlab.yml` na raiz do repositorio. Entao faca
-commit, e abra Actions -> R36S dArkOSRE CloudLab -> Run workflow. Se o GitHub
-nao exibir o fluxo em branches, verifique se a instalacao de workflows na
-branch padrao e obrigatoria nas configuracoes do repositorio.
+**IMPORTANTE**: o workflow ja esta versionado na branch experimental
+`experiment/re4nx-r36s-cloudlab-v2` e na PR #30 do repositorio CubeEvil4.
+Ate agora **nenhuma execucao ARM64 do GitHub Actions foi confirmada**.
+O GitHub exige que o workflow exista na branch padrao antes de permitir
+`workflow_dispatch` manual; decidimos nao alterar a `master` enquanto a PR
+estiver em rascunho. Um mantenedor pode habilitar a integracao em uma
+mudanca separada quando quiser disparar os jobs. Nao apresente testes locais
+como validacao do R36S real ou da nuvem.
 
 **Docker local (se quiser):** execute na pasta `r36s_cloudlab`:
 
@@ -134,7 +135,7 @@ a velocidade do RK3326, o driver Mali-G31 ou o kernel 4.4.189.
 - Testes negativos: arquivo sensivel no ZIP detectado e recusado.
 - Seis testes CTest do codigo RE4NX Phase1/2/3 passaram no PC x86_64.
 - Testes CPU/mmap/W^X/64, 256 e 512 MiB passaram no PC x86_64.
-- Codigo ARM64 Phase2/3 compilado como ELF AArch64; execucao nativa nos
+- Codigo ARM64 Phase2/3/4 compilado como ELF AArch64; execucao nativa nos
   runners GitHub ARM64 ainda depende de um workflow registrado e executado.
 - Teste Mesa GLES3 nao rodou neste PC porque nao ha headers EGL/GLES
   instalados; o GitHub Actions instala as dependencias antes de testar.
