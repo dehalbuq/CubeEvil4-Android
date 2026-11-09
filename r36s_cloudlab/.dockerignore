@@ -1,0 +1,10 @@
+.cloud-build/
+**/__pycache__/
+**/*.pyc
+re4nx/re4nx-native-aarch64
+re4nx/re4nx-hle-aarch64
+**/*.log
+**/build/
+*.zip
+*.tar.gz
+.git/

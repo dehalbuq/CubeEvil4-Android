@@ -1,0 +1,64 @@
+{
+  "arch": "aarch64",
+  "cpu": {
+    "cores": 4,
+    "current_khz": 1512000,
+    "governor": "performance",
+    "max_khz": 1512000,
+    "model": "Cortex-A35",
+    "page_size_bytes": 4096
+  },
+  "device_compatible": [
+    "rockchip,rk3326-r36s-linux",
+    "rockchip,rk3326"
+  ],
+  "display": {
+    "height": 480,
+    "nominal_hz": 59,
+    "width": 640
+  },
+  "gpu": {
+    "cloud_gpu_is_real_mali": false,
+    "current_hz": 520000000,
+    "devfreq_device": "ff400000.gpu",
+    "governor": "performance",
+    "max_hz": 520000000,
+    "observed_previous_runtime_renderer": "Mali-G31 (older CubeEvil4 hardware log; not verified by this collector)",
+    "previous_runtime_gles": "OpenGL ES 3.2 (older CubeEvil4 hardware log; not verified by this collector)"
+  },
+  "input": {
+    "gamepad_name": "GO-Super Gamepad",
+    "secondary_keypad_name": "rk29-keypad"
+  },
+  "kernel": "4.4.189",
+  "libraries": {
+    "egl_pkg_config_version": "1.5",
+    "glesv2_pkg_config_version": "3.2",
+    "sdl2_config_version": "2.32.10",
+    "sdl2_pkg_config_version": "2.32.4"
+  },
+  "memory": {
+    "initial_target_process_virtual_mib": 768,
+    "optional_rss_stress_mib": 640,
+    "recommended_rss_budget_mib": 512,
+    "reported_available_mib_at_capture": 695,
+    "reported_total_mib": 895,
+    "stress_levels_mib": [
+      64,
+      256,
+      512
+    ],
+    "swap_mib": 0
+  },
+  "model": "R36S-V20 2025-05-18 2549",
+  "os_pretty_name": "Debian GNU/Linux 13 (trixie)",
+  "schema_version": 2,
+  "snapshot_verified": true,
+  "source": "dArkOSRE local collector snapshot; technical metadata only",
+  "warnings": [
+    "Emulated host CPU/memory timings and software GLES are not equivalent to Cortex-A35/Mali-G31",
+    "768 MiB is a virtual address book-keeping target, not a safe physical RSS allocation",
+    "Firmware clock/timestamps may be wrong; snapshot filename predates the recorded kernel build date",
+    "Kernel 4.4.189 system call and ioctl behavior cannot be fully reproduced on newer cloud kernels"
+  ]
+}
