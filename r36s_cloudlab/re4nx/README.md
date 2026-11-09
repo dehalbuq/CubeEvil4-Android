@@ -256,3 +256,26 @@ FPS do RE4**. Necessita SDL2 e driver GLES 3 funcionais no firmware.
 
 **Licença:** MIT, código escrito para este protótipo, sem código de emuladores
 de terceiros. Nintendo Switch / Resident Evil são marcas de seus titulares.
+
+## Fase 4: HIPC/CMIF serializado (experimental)
+
+`src/native_phase4.c` implementa um parser limitado dos cabecalhos HIPC
+(documentados publicamente) e das assinaturas `SFCI`/`SFCO`, alem de
+um **servico sintético** `sm:` e handles com geracoes verificadas.
+Ele rejeita descritores de buffer, receive-lists, dominios, mensagens especiais
+e versoes que ainda nao implementamos, sem confundi-las com compatibilidade real.
+
+A opcao `--selftest` cobre as mensagens validas, 10 casos negativos e 10 mil
+ciclos de handles; `--fuzz` testa 50 mil mensagens pseudoaleatorias com semente
+fixa. O ELF Linux ARM64 e estatico e nao executa jogo comercial.
+
+```sh
+sh tools/build-native-phase4-aarch64.sh
+# Somente em Linux AArch64:
+./re4nx-hipc-aarch64 --selftest
+./re4nx-hipc-aarch64 --fuzz
+```
+
+**Nao implementado:** Horizon real, chamadas SVC de Switch, dominios,
+servicos de HID/NVN/arquivo, traducao NVN para GLES3 ou inicializacao do RE4.
+Documentacao de referencia: https://switchbrew.org/wiki/HIPC .
