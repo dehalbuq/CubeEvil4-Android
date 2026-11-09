@@ -1,10 +1,10 @@
-# R36S dArkOSRE CloudLab v3 — perfil real, testes automatizados e HIPC/CMIF
+# R36S dArkOSRE CloudLab v4 — Fase 5 ponte SVC/TLS sintética e ARM64
 
 **Focado no RE4NX (Switch ARM64) e util para o CubeEvil4 (GameCube).**
 Coleta dados tecnicos do dArkOSRE **sem root, sem instalar pacotes, sem
 conexao a internet e sem capturar ROMs, chaves, jogos ou saves**. Reunimos
 este coletor e um laboratorio reproduzivel para executar os testes sinteticos
-das Fases 1–4 do RE4NX em ARM64 Linux, com OpenGL ES 3 por Mesa em modo software.
+das Fases 1–5 do RE4NX em ARM64 Linux, com OpenGL ES 3 por Mesa em modo software.
 
 ## Perfil real recebido e incorporado — nao precisa coletar novamente
 
@@ -32,7 +32,7 @@ sinteticos RE4NX no PC, mais 9 casos negativos/positivos do NSO0 e
 3 casos de IPC/handles; 3 niveis de memoria (64/256/512 MiB) com leitura
 real de paginas, verificacao estatica do ELF AArch64, e compilacao de
 GLSL ES3 via Mesa **se as dependencias estiverem instaladas**. No GitHub
-Actions ARM64 o GLES3 e obrigatorio e a suite Phase2/3/4 executa nativamente.
+Actions ARM64 o GLES3 e obrigatorio e a suite Phase2/3/4/5 executa nativamente.
 
 ## Como repetir a coleta no R36S (opcional)
 
@@ -78,7 +78,7 @@ e caminhos locais ainda podem revelar o sistema; revise antes de compartilhar.
 
 ## Rodar os testes no PC sem esperar hardware
 
-A pasta `r36s_cloudlab/re4nx` contem o codigo-fonte experimental das Fases 1–4,
+A pasta `r36s_cloudlab/re4nx` contem o codigo-fonte experimental das Fases 1–5,
 sem binarios do jogo. `cloud/run-cloud-tests.sh` compila o RE4NX e executa
 sua bateria de testes sinteticos, alem do teste de W^X, threads e
 memoria com leitura ate 512 MiB.
@@ -101,7 +101,7 @@ abre um contexto EGL/OpenGL ES 3 em modo software, valida shaders GLSL ES
 **GitHub Actions:** o pacote inclui `.github/workflows/darkosre-cloudlab.yml`.
 Ao adicionar `r36s_cloudlab/` e esse workflow na raiz de um repositorio
 GitHub, voce pode disparar `Run workflow` no Actions. O job usa
-`ubuntu-24.04-arm`: Linux ARM64 nativo, executa os binarios Phase2/3/4 e
+`ubuntu-24.04-arm`: Linux ARM64 nativo, executa os binarios Phase2/3/4/5 e
 verifica os resultados automaticamente, guardando logs como artifacts.
 Ele nao precisa do ZIP pessoal `darkosre-cloudprofile` no repositorio publico:
 usamos apenas JSON tecnico minimizado, que deve ser revisto antes de publicar.
@@ -135,7 +135,7 @@ a velocidade do RK3326, o driver Mali-G31 ou o kernel 4.4.189.
 - Testes negativos: arquivo sensivel no ZIP detectado e recusado.
 - Seis testes CTest do codigo RE4NX Phase1/2/3 passaram no PC x86_64.
 - Testes CPU/mmap/W^X/64, 256 e 512 MiB passaram no PC x86_64.
-- Codigo ARM64 Phase2/3/4 compilado como ELF AArch64; execucao nativa nos
+- Codigo ARM64 Phase2/3/4/5 compilado como ELF AArch64; execucao nativa nos
   runners GitHub ARM64 ainda depende de um workflow registrado e executado.
 - Teste Mesa GLES3 nao rodou neste PC porque nao ha headers EGL/GLES
   instalados; o GitHub Actions instala as dependencias antes de testar.
@@ -176,3 +176,33 @@ console, nao de uma emulacao de tempo de CPU/GPU. O OpenGL ES3 por Mesa ainda
 aguarda um runner que tenha EGL/GLES3 instalado.
 
 Resumo tecnico em `docs/STATUS-DOS-TESTES-V3.md`.
+
+
+## Fase 5: ponte restrita SVC / TLS / IPC (sintética)
+
+A Fase 5 adiciona `re4nx/src/native_phase5.c` e
+`re4nx/tools/build-native-phase5-aarch64.sh`. O experimento modela um
+processo convidado isolado, com memória de 4096 bytes, buffer TLS HIPC de
+256 bytes, tabela de até 64 handles e números de chamadas públicos do Horizon:
+
+- `0x1F` (`ConnectToNamedPort`): apenas `sm:` sintético;
+- `0x21` (`SendSyncRequest`): HIPC/CMIF limitado e apenas a sessão `sm:`
+  oferece operações de teste;
+- `0x16` (`CloseHandle`): rejeição de handles expirados.
+
+Os retornos do *kernel* modelado em X0 são separados de erros do serviço
+no cabeçalho `SFCO`; endereços do convidado são offsets validados, nunca
+ponteiros arbitrários do processo host. Testes host (`CTest`) e 50.000
+mensagens aleatórias determinísticas verificam limites e vazamento de handles.
+A compilação Linux ARM64 estática usa `-mcpu=cortex-a35`.
+
+**Limitação decisiva:** não há interceptação de uma instrução SVC real do
+Switch, escalonador ou processos Horizon, gerenciamento MMU, carregamento
+comercial nem GPU NVN. Os valores internos `TEST_*` **não são códigos
+oficiais de erro do Horizon**. Nenhuma execução do RE4 de Switch é alegada.
+
+Referências públicas:
+https://switchbrew.org/wiki/SVC
+https://switchbrew.org/wiki/HIPC
+
+Ainda não foi executada a CI do GitHub Actions ou a GPU Mali-G31.

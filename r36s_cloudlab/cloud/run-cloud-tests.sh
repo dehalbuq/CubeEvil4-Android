@@ -1,5 +1,5 @@
 #!/bin/sh
-# Offline-safe smoke + RE4NX synthetic suite; no proprietary games or keys.
+# Offline-safe smoke + RE4NX synthetic suite (Phases 1-5); no proprietary games or keys.
 set -eu
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ROOT=$(CDPATH= cd -- "$HERE/.." && pwd)
@@ -42,8 +42,8 @@ if [ -d "$ROOT/re4nx" ]; then
  else
   echo 'HOST_ONLY_NEGATIVE_TESTS=SKIPPED_ON_ARM64; native Phase2/3 regressions run below'
  fi
- (cd "$ROOT/re4nx" && sh tools/build-native-phase2-aarch64.sh && sh tools/build-native-phase3-aarch64.sh && sh tools/build-native-phase4-aarch64.sh)
- python3 "$HERE/check_abi.py" "$ROOT/re4nx/re4nx-native-aarch64" "$ROOT/re4nx/re4nx-hle-aarch64" "$ROOT/re4nx/re4nx-hipc-aarch64"
+ (cd "$ROOT/re4nx" && sh tools/build-native-phase2-aarch64.sh && sh tools/build-native-phase3-aarch64.sh && sh tools/build-native-phase4-aarch64.sh && sh tools/build-native-phase5-aarch64.sh)
+ python3 "$HERE/check_abi.py" "$ROOT/re4nx/re4nx-native-aarch64" "$ROOT/re4nx/re4nx-hle-aarch64" "$ROOT/re4nx/re4nx-hipc-aarch64" "$ROOT/re4nx/re4nx-svc-aarch64"
  if [ "$(uname -m)" = "aarch64" ]; then
   "$ROOT/re4nx/re4nx-native-aarch64" --synthetic "$ROOT/re4nx/samples/synthetic-aarch64.nso"
   "$ROOT/re4nx/re4nx-native-aarch64" --memory-probe
@@ -51,9 +51,11 @@ if [ -d "$ROOT/re4nx" ]; then
   "$ROOT/re4nx/re4nx-hle-aarch64" --stress
   "$ROOT/re4nx/re4nx-hipc-aarch64" --selftest
   "$ROOT/re4nx/re4nx-hipc-aarch64" --fuzz
+  "$ROOT/re4nx/re4nx-svc-aarch64" --selftest
+  "$ROOT/re4nx/re4nx-svc-aarch64" --fuzz
   python3 "$ROOT/re4nx/tests/test_phase2.py" "$ROOT/re4nx/re4nx-native-aarch64"
   python3 "$ROOT/re4nx/tests/test_phase3.py" "$ROOT/re4nx/re4nx-hle-aarch64"
-  echo 'RE4NX_ARM64_NATIVE_TESTS=PASS PHASES=1,2,3,4'
+  echo 'RE4NX_ARM64_NATIVE_TESTS=PASS PHASES=1,2,3,4,5'
  else
   if [ "${CLOUDLAB_STRICT_ARM64:-0}" = "1" ]; then
    echo 'RE4NX_ARM64_NATIVE_TESTS=FAIL unexpected non-AArch64 runner' >&2

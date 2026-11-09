@@ -3,5 +3,5 @@
 *.tar.gz
 re4nx/re4nx-native-aarch64
 re4nx/re4nx-hle-aarch64
-
 re4nx/re4nx-hipc-aarch64
+re4nx/re4nx-svc-aarch64

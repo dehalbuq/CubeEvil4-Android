@@ -1,4 +1,4 @@
-name: R36S dArkOSRE CloudLab (native ARM64 synthetic tests)
+name: R36S dArkOSRE CloudLab (ARM64 synthetic phases 1-5)
 on:
   workflow_dispatch:
   push:
@@ -28,12 +28,22 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y clang lld cmake ninja-build build-essential \
             python3 pkg-config libegl-dev libgles-dev libgl1-mesa-dri libsdl2-dev
-      - name: Run ARM64 Phase 1-4, HIPC/CMIF wire, W^X, 512 MiB memory profile and Mesa GLES3
+      - name: Run ARM64 Phase 1-5, SVC TLS bridge, HIPC/CMIF, W^X, 512 MiB memory profile and Mesa GLES3
         shell: bash
         run: |
           set -o pipefail
           sh r36s_cloudlab/cloud/run-cloud-tests.sh 2>&1 | tee darkosre-cloudlab-results.log
           test -f r36s_cloudlab/.cloud-build/hardware-profile.json
+      - name: Phase 5 synthetic HIPC/SVC bridge with AddressSanitizer and UBSan
+        shell: bash
+        run: |
+          set -euo pipefail
+          clang -std=c11 -O1 -g -DRE4NX_HOST_TEST=1 \
+            -fsanitize=address,undefined -fno-omit-frame-pointer \
+            -Wall -Wextra -Werror r36s_cloudlab/re4nx/src/native_phase5.c \
+            -o /tmp/re4nx-phase5-sanitized
+          /tmp/re4nx-phase5-sanitized --selftest
+          /tmp/re4nx-phase5-sanitized --fuzz
       - name: Re-run synthetic suite under R36S 895 MiB cgroup memory cap
         shell: bash
         run: |

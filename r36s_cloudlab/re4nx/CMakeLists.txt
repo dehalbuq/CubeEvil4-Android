@@ -45,3 +45,12 @@ if(BUILD_TESTING)
   add_test(NAME phase4_hipc_cmif_wire COMMAND re4nx-phase4-host --selftest)
   add_test(NAME phase4_hipc_fuzz_50k COMMAND re4nx-phase4-host --fuzz)
 endif()
+
+# Phase 5: synthetic guest register/TLS -> HIPC/CMIF SVC boundary (not a real trap).
+add_executable(re4nx-phase5-host src/native_phase5.c)
+target_compile_definitions(re4nx-phase5-host PRIVATE RE4NX_HOST_TEST=1)
+target_compile_options(re4nx-phase5-host PRIVATE -O2 -Wall -Wextra -Werror -Wpedantic)
+if(BUILD_TESTING)
+  add_test(NAME phase5_svc_tls_bridge COMMAND re4nx-phase5-host --selftest)
+  add_test(NAME phase5_svc_fuzz_50k COMMAND re4nx-phase5-host --fuzz)
+endif()
