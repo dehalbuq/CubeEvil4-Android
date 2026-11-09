@@ -34,3 +34,14 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
     add_test(NAME phase3_handle_stress COMMAND re4nx-phase3-host --stress)
   endif()
 endif()
+
+# Phase 4: HIPC and CMIF serialized wire header/parser, subset-only fake sm:.
+# This host build uses libc for CI; the real target separately builds a
+# freestanding, statically linked Linux ARM64 ELF for synthetic execution.
+add_executable(re4nx-phase4-host src/native_phase4.c)
+target_compile_definitions(re4nx-phase4-host PRIVATE RE4NX_HOST_TEST=1)
+target_compile_options(re4nx-phase4-host PRIVATE -O2 -Wall -Wextra -Werror -Wpedantic)
+if(BUILD_TESTING)
+  add_test(NAME phase4_hipc_cmif_wire COMMAND re4nx-phase4-host --selftest)
+  add_test(NAME phase4_hipc_fuzz_50k COMMAND re4nx-phase4-host --fuzz)
+endif()
