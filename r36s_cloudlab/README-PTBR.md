@@ -1,10 +1,10 @@
-# R36S dArkOSRE CloudLab v2 — perfil real e testes automatizados
+# R36S dArkOSRE CloudLab v3 — perfil real, testes automatizados e HIPC/CMIF
 
 **Focado no RE4NX (Switch ARM64) e util para o CubeEvil4 (GameCube).**
 Coleta dados tecnicos do dArkOSRE **sem root, sem instalar pacotes, sem
 conexao a internet e sem capturar ROMs, chaves, jogos ou saves**. Reunimos
 este coletor e um laboratorio reproduzivel para executar os testes sinteticos
-das Fases 1–3 do RE4NX em ARM64 Linux, com OpenGL ES 3 por Mesa em modo software.
+das Fases 1–4 do RE4NX em ARM64 Linux, com OpenGL ES 3 por Mesa em modo software.
 
 ## Perfil real recebido e incorporado — nao precisa coletar novamente
 
@@ -78,7 +78,7 @@ e caminhos locais ainda podem revelar o sistema; revise antes de compartilhar.
 
 ## Rodar os testes no PC sem esperar hardware
 
-A pasta `r36s_cloudlab/re4nx` contem o codigo-fonte original das Fases 1–3,
+A pasta `r36s_cloudlab/re4nx` contem o codigo-fonte experimental das Fases 1–4,
 sem binarios do jogo. `cloud/run-cloud-tests.sh` compila o RE4NX e executa
 sua bateria de testes sinteticos, alem do teste de W^X, threads e
 memoria com leitura ate 512 MiB.
@@ -108,14 +108,13 @@ usamos apenas JSON tecnico minimizado, que deve ser revisto antes de publicar.
 O job tambem compila e executa novamente em um container **Debian trixie** com
 limite estrito de 895 MiB de cgroup e sem swap; o kernel continua sendo o do host.
 
-**ESTADO ATUAL NO GITHUB**: o codigo-fonte, os testes e o workflow
-`.github/workflows/darkosre-cloudlab.yml` foram publicados na branch
-`experiment/re4nx-r36s-cloudlab-v2`, isolada da branch master, em
-https://github.com/dehalbuq/CubeEvil4-Android/pull/30 .
-Os testes locais passaram, mas o GitHub Actions **ainda nao executou**
-nenhum job dessa branch. O workflow pode nao aparecer no menu Run workflow
-enquanto ele nao existir na branch padrao. Nao confundir instalacao do
-workflow com execucao ou aprovacao em ARM64 na nuvem.
+**IMPORTANTE**: o workflow esta apenas dentro do ZIP. Ele **nao foi instalado
+nem executado no GitHub** por esta entrega. Para ativar CI, coloque a pasta
+`r36s_cloudlab/` na raiz do seu repositorio e copie o workflow do pacote para
+`.github/workflows/darkosre-cloudlab.yml` na raiz do repositorio. Entao faca
+commit, e abra Actions -> R36S dArkOSRE CloudLab -> Run workflow. Se o GitHub
+nao exibir o fluxo em branches, verifique se a instalacao de workflows na
+branch padrao e obrigatoria nas configuracoes do repositorio.
 
 **Docker local (se quiser):** execute na pasta `r36s_cloudlab`:
 
@@ -149,3 +148,30 @@ resultado do PC/CI com desempenho real da Mali-G31.
 Consulte `docs/KNOWN-LIMITATIONS.md`. Nunca coloque a pasta `sysroot/` gerada
 com `--with-libs` em um repositorio publico. O CloudLab nao executa o jogo
 comercial, nao recupera firmware ou chaves do Switch e nao roda emulacao NVN.
+
+
+## Atualizacao v3: parser HIPC/CMIF da Fase 4
+
+A Fase 4 agora inclui `re4nx/src/native_phase4.c`, um parser limitado
+para a estrutura de cabecalho HIPC e CMIF do Switch, construido usando
+informacoes publicas de https://switchbrew.org/wiki/HIPC .
+
+O parser rejeita explicitamente descritores, regioes de buffer, dominio,
+receive-list e mensagens especiais ainda nao implementadas. O unico
+servico funcional e um **modelo sintetico** de `sm:`, usado para testar
+abertura e encerramento seguro de handles e a serializacao SFCO.
+Os demais nomes (`hid`, `vi:u`, `nvdrv`, `fsp-srv`, `appletOE`) possuem
+handles de teste, mas **nao implementam** os seus comandos reais.
+
+No host: CTest inclui dois testes novos, `phase4_hipc_cmif_wire` e
+`phase4_hipc_fuzz_50k`. O sanitizador ASAN/UBSAN tambem foi executado
+localmente no parser e passou. O nucleo Linux AArch64 estatico e gerado por
+`sh re4nx/tools/build-native-phase4-aarch64.sh`.
+
+A suite completa local passou em x86_64: 3 testes CloudLab e 8 testes
+RE4NX CTest; o executavel ARM64 compilou e passou no check do ELF, mas **nao
+foi executado em ARM64 no CI**. O teto de 895 MiB vem do perfil real do
+console, nao de uma emulacao de tempo de CPU/GPU. O OpenGL ES3 por Mesa ainda
+aguarda um runner que tenha EGL/GLES3 instalado.
+
+Resumo tecnico em `docs/STATUS-DOS-TESTES-V3.md`.
