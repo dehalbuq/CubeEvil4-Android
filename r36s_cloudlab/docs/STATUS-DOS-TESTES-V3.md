@@ -41,3 +41,11 @@ O workflow foi atualizado nesta branch de PR em rascunho, sem alterar
 Referencias:
 - https://switchbrew.org/wiki/HIPC
 - https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow
+
+## Verificacao local adicional, perfil de memoria
+
+A suite local foi repetida com limite `ulimit -v 916480` (895 MiB de
+espaco de enderecamento virtual **por processo**) e passou: CloudLab 3/3,
+RE4NX 8/8, verificacao ABI dos tres ELF AArch64. Isso **nao equivale**
+a limitar o RSS/cgroup de um processo e nao simula a CPU Cortex-A35,
+o kernel 4.4.189, o driver Mali-G31 ou desempenho/FPS real.
