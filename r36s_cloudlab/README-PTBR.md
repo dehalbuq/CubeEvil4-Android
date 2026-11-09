@@ -108,13 +108,14 @@ usamos apenas JSON tecnico minimizado, que deve ser revisto antes de publicar.
 O job tambem compila e executa novamente em um container **Debian trixie** com
 limite estrito de 895 MiB de cgroup e sem swap; o kernel continua sendo o do host.
 
-**IMPORTANTE**: o workflow esta apenas dentro do ZIP. Ele **nao foi instalado
-nem executado no GitHub** por esta entrega. Para ativar CI, coloque a pasta
-`r36s_cloudlab/` na raiz do seu repositorio e copie o workflow do pacote para
-`.github/workflows/darkosre-cloudlab.yml` na raiz do repositorio. Entao faca
-commit, e abra Actions -> R36S dArkOSRE CloudLab -> Run workflow. Se o GitHub
-nao exibir o fluxo em branches, verifique se a instalacao de workflows na
-branch padrao e obrigatoria nas configuracoes do repositorio.
+**ESTADO ATUAL NO GITHUB**: o codigo-fonte, os testes e o workflow
+`.github/workflows/darkosre-cloudlab.yml` foram publicados na branch
+`experiment/re4nx-r36s-cloudlab-v2`, isolada da branch master, em
+https://github.com/dehalbuq/CubeEvil4-Android/pull/30 .
+Os testes locais passaram, mas o GitHub Actions **ainda nao executou**
+nenhum job dessa branch. O workflow pode nao aparecer no menu Run workflow
+enquanto ele nao existir na branch padrao. Nao confundir instalacao do
+workflow com execucao ou aprovacao em ARM64 na nuvem.
 
 **Docker local (se quiser):** execute na pasta `r36s_cloudlab`:
 
