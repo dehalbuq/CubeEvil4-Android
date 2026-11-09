@@ -1,0 +1,65 @@
+# Minimal default-branch registration; no emulator or game code merged.
+name: RE4NX CloudLab ARM64 - manual experimental branch
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  re4nx-native-arm64:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 70
+    env:
+      EGL_PLATFORM: surfaceless
+      LIBGL_ALWAYS_SOFTWARE: '1'
+      MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
+      CLOUDLAB_STRICT_ARM64: '1'
+      CLOUDLAB_REQUIRE_GLES3: '1'
+    steps:
+      - name: Checkout experimental RE4NX CloudLab (pinned branch)
+        uses: actions/checkout@v4
+        with:
+          ref: experiment/re4nx-r36s-cloudlab-v2
+          persist-credentials: false
+      - name: Install ARM64 GLES3 Mesa and toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y clang lld cmake ninja-build build-essential \
+            python3 pkg-config libegl-dev libgles-dev libgl1-mesa-dri libsdl2-dev
+      - name: Run all synthetic phases and strict ARM64 ABI checks
+        shell: bash
+        run: |
+          set -o pipefail
+          sh r36s_cloudlab/cloud/run-cloud-tests.sh 2>&1 | tee re4nx-cloudlab-arm64.log
+      - name: Validate Phase 5 under ASAN and UBSan (ARM64)
+        shell: bash
+        run: |
+          set -euo pipefail
+          clang -std=c11 -O1 -g -DRE4NX_HOST_TEST=1 \
+            -fsanitize=address,undefined -fno-omit-frame-pointer \
+            -Wall -Wextra -Werror r36s_cloudlab/re4nx/src/native_phase5.c \
+            -o /tmp/re4nx-phase5-sanitized
+          /tmp/re4nx-phase5-sanitized --selftest
+          /tmp/re4nx-phase5-sanitized --fuzz
+      - name: Debian 13 ARM64 / 895 MiB cgroup / no swap
+        shell: bash
+        run: |
+          set -o pipefail
+          docker build -q --platform linux/arm64 -f r36s_cloudlab/cloud/Dockerfile \
+            -t re4nx-r36s-cloudlab:v4 r36s_cloudlab
+          docker run --rm --platform linux/arm64 --memory=895m --memory-swap=895m --cpus=4 \
+            -e CLOUDLAB_REQUIRE_GLES3=1 -e CLOUDLAB_STRICT_ARM64=1 \
+            re4nx-r36s-cloudlab:v4 2>&1 | tee re4nx-cloudlab-cgroup.log
+      - name: Publish logs, including failures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: re4nx-r36s-cloudlab-arm64-phase5-results
+          path: |
+            re4nx-cloudlab-arm64.log
+            re4nx-cloudlab-cgroup.log
+            r36s_cloudlab/.cloud-build/hardware-profile.json
+          if-no-files-found: warn
+          retention-days: 14
