@@ -1,0 +1,20 @@
+{
+  "source": "Previous user-provided RE4NX/CubeEvil4 logs; corroborated with 68 verified collector SHA256 hashes in the technical snapshot",
+  "target": "R36S / dArkOSRE",
+  "architecture": "aarch64",
+  "kernel_release": "4.4.189",
+  "gpu": "Mali-G31",
+  "opengl_es_version": "3.2",
+  "gpu_driver_version": "v1.r13p0-01rel0.8747d14aec16ec21ac2b2da252c4ec5f",
+  "physical_memtotal_reported_mib": 895,
+  "available_memory_example_mib": 695,
+  "swap_reported_mib": 0,
+  "sdl_joysticks": 1,
+  "sdl_gamepad_name": "GO-Super Gamepad",
+  "sdl_gamepad_buttons": 17,
+  "notes": [
+    "CPU Cortex-A35 with 4 cores, RK3326, 1512MHz, 895MiB and 4096B pages have now been independently confirmed by user's collector",
+    "Mali-G31 OpenGL ES 3.2 GPU renderer string was observed by earlier CubeEvil4 runtime log, not directly re-tested by collector",
+    "Cloud Mesa software GLES3 does not reproduce driver, GPU performance, or kernel 4.4 ioctl behavior"
+  ]
+}
