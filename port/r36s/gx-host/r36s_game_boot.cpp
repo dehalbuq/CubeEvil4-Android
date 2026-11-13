@@ -333,6 +333,15 @@ int main(int argc,char**argv) {
   ShowcaseCleanData cleanGameData;
   const bool debugOverlayReady=cleanGameData.prepare(coreDir,originalDataDir);
   const std::string dataDir=debugOverlayReady?cleanGameData.path():originalDataDir;
+#ifdef RE4_R36S_DEMO_RELEASE
+  // Release demo must never expose the game's original diagnostic PRINT_PAGE.
+  // Fail safely if the non-mutating private config overlay cannot be created.
+  if(!debugOverlayReady) {
+    fprintf(stderr,"Resident Evil 4 demo: cannot disable original game debug display: %s\n",
+            cleanGameData.error.c_str());
+    return 22;
+  }
+#endif
   if(!debugOverlayReady)
     fprintf(stderr,"SHOWCASE_DEBUG_TEXT_NOTE=unable_to_prepare_clean_config_overlay; reason=%s; original debug text may remain\n",\n            cleanGameData.error.c_str());
 #else
@@ -463,7 +472,12 @@ int main(int argc,char**argv) {
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK,SDL_GL_CONTEXT_PROFILE_ES);
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION,3);
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION,0);
-  SDL_Window* window=SDL_CreateWindow("CubeEvil4 IPC GX R36S",SDL_WINDOWPOS_CENTERED,
+#ifdef RE4_R36S_DEMO_RELEASE
+  constexpr const char* kWindowTitle="Resident Evil 4 - R36S Demo 640x480";
+#else
+  constexpr const char* kWindowTitle="CubeEvil4 IPC GX R36S";
+#endif
+  SDL_Window* window=SDL_CreateWindow(kWindowTitle,SDL_WINDOWPOS_CENTERED,
      SDL_WINDOWPOS_CENTERED,kW,kH,SDL_WINDOW_SHOWN|SDL_WINDOW_OPENGL);
   if(!window){fprintf(stderr,"SDL_WINDOW_ERROR=%s\n",SDL_GetError());SDL_Quit();re4ipc::shutdown(3000);return 6;}
   TRACE_MARK("egl_create",0,0);

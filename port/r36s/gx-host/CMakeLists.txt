@@ -189,3 +189,19 @@ target_compile_options(r36s_showcase_input_probe PRIVATE
 )
 target_link_libraries(r36s_showcase_input_probe PRIVATE PkgConfig::SDL2)
 
+
+# 640x480 presentation build: no debug or profiler instrumentation, no
+# resolution downgrade. Independent target preserves prior demo binaries.
+# Internal GameCube EFB stays at 1x; SDL output is 640x480.
+add_executable(r36s_re4_demo_640x480 ${RE4_R36S_A35_SOURCES})
+target_include_directories(r36s_re4_demo_640x480 PRIVATE "${RE4_ANDROID_CPP}" "${RE4_WHOLE_RUNTIME}")
+target_compile_definitions(r36s_re4_demo_640x480 PRIVATE
+  RE4_R36S_SHOWCASE=1 RE4_R36S_DEMO_RELEASE=1 RE4_R36S_SHADER_CACHE=1 NDEBUG=1
+)
+target_compile_options(r36s_re4_demo_640x480 PRIVATE
+  -O3 -mcpu=cortex-a35 -mtune=cortex-a35 -flto=auto
+  -ffp-contract=off -fno-fast-math
+  -ffunction-sections -fdata-sections -Wall -Wextra
+)
+target_link_libraries(r36s_re4_demo_640x480 PRIVATE PkgConfig::SDL2 "${GLESV2_LIB}" dl pthread)
+target_link_options(r36s_re4_demo_640x480 PRIVATE -flto=auto -Wl,--gc-sections)
