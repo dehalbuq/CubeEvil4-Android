@@ -1,6 +1,7 @@
 name: Resident Evil 4 R36S Demo - 640x480 sharp ARM64
 
 on:
+  workflow_call:
   workflow_dispatch:
   push:
     branches:
@@ -15,6 +16,8 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: experiment/r36s-re4-demo-640x480-sharp
       - name: Install host GLES3 software smoke-test requirements
         run: |
           sudo apt-get update -qq
@@ -38,6 +41,8 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: experiment/r36s-re4-demo-640x480-sharp
       - name: Install Cortex-A35 native frontend build dependencies
         run: |
           sudo apt-get update -qq
@@ -80,6 +85,8 @@ jobs:
       RE4_OPT: "2"
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: experiment/r36s-re4-demo-640x480-sharp
       - name: Install Linux whole-program AArch64 cross toolchain
         run: sudo bash port/tools/whole_setup_linux.sh
       - name: Compile matching AArch64 core for local user-owned game-data tests
@@ -123,6 +130,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: experiment/r36s-re4-demo-640x480-sharp
       - uses: actions/download-artifact@v4
         with:
           name: re4-r36s-demo-640x480-frontend
@@ -182,12 +191,14 @@ jobs:
 
   publish-prerelease:
     needs: assemble
-    if: github.event_name == 'push' && github.ref == 'refs/heads/experiment/r36s-re4-demo-640x480-sharp'
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/experiment/r36s-re4-demo-640x480-sharp')
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: experiment/r36s-re4-demo-640x480-sharp
       - uses: actions/download-artifact@v4
         with:
           name: Resident-Evil-4-R36S-DEMO-640x480-FRONTEND-ONLY
@@ -201,10 +212,11 @@ jobs:
           TAG=r36s-re4-demo-640x480-v0.1.0
           ASSET=release/Resident-Evil-4-R36S-DEMO-640x480-FRONTEND-ONLY.zip
           test -s "$ASSET"
+          TARGET_SHA=$(git rev-parse HEAD)
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$ASSET" --clobber
           else
-            gh release create "$TAG" "$ASSET" --target "$GITHUB_SHA" \
+            gh release create "$TAG" "$ASSET" --target "$TARGET_SHA" \
               --title "Resident Evil 4 — R36S Demo 640×480 (unofficial experimental)" \
               --notes "Unofficial technical prerelease. Sharp 640×480 SDL2/GLES3 frontend only; NO proprietary assets, extracted game files or reconstructed core modules. Gameplay/performance not yet validated on physical R36S. Build matching game core from authorized source and use only your own original game files." \
               --prerelease
