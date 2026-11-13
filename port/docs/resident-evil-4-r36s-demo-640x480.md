@@ -41,3 +41,11 @@ No files are installed over existing `cubeevil4_live_gx` or `cubeevil4_0995_exp`
 CI can verify compilation, file structure, unit tests, ELF architecture and Mesa/EGL smoke checks. Only a physical R36S test confirms correct image, 640×480 video mode, game load, shader sharpness, audio, FPS/game speed, heat/RAM, menu controls and saving. The 30 FPS objective is not yet confirmed.
 
 A "demo" here refers to an **unofficial technical demonstration**, not a shareable sample of copyrighted game content.
+
+## Estado confirmado em 13/11/2026 e retomada
+
+- Código e documentação salvos na branch `experiment/r36s-re4-demo-640x480-sharp` (PR #32 para a branch experimental 0.99.5).
+- Compilação nativa ARM64 **ainda NÃO executada ou validada**. Verificações GitHub API mostraram zero runs novos; não há ZIP de demonstração nem Release publicados.
+- Para disparar o CI caso commits do GitHub App não o iniciem: com a branch experimental selecionada, edite este documento na interface web do GitHub (adicione uma linha em branco ou comentário) e **Commit changes** diretamente nessa branch. O evento `push` gerado pela conta do proprietário deverá tentar iniciar `.github/workflows/r36s-demo-640x480.yml`. Alternativamente, dê push de commit vazio via git local (o workflow não usa filtro de paths).
+- O pipeline inclui smoke-test EGL no host, teste ARM64 do frontend, compilação do core recompilado, ZIP para testes locais e GitHub prerelease **frontend-only** após sucesso integral. Erros exigem corrigir a etapa específica; não mesclar PR #29/#32 antes disso.
+- Na próxima conversa: inspecionar os runs mais novos de `dehalbuq/CubeEvil4-Android`, a PR #32, o workflow acima e seu artifact `Resident-Evil-4-R36S-DEMO-640x480-ARM64-TEST`; se compilou, testar no R36S com dArkOSRE usando arquivos originais compatíveis G4BE08 e reportar FPS/áudio/saída.
