@@ -1,0 +1,208 @@
+name: Resident Evil 4 R36S Demo - 640x480 sharp ARM64
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - experiment/r36s-re4-demo-640x480-sharp
+    paths:
+      - ".github/workflows/r36s-demo-640x480.yml"
+      - "port/r36s/**"
+      - "port/docs/resident-evil-4-r36s-demo-640x480.md"
+      - "port/whole/**"
+      - "port/android-decomp/app/src/main/cpp/gx_*.cpp"
+      - "port/android-decomp/app/src/main/cpp/gx_*.h"
+
+permissions:
+  contents: read
+
+jobs:
+  host-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install host GLES3 software smoke-test requirements
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y cmake ninja-build libsdl2-dev libgles-dev libegl-dev xvfb libgl1-mesa-dri
+      - name: GX native one-timescale and no-debug policy
+        run: |
+          set -eu
+          grep -q 'constexpr int kW=640,kH=480' port/r36s/gx-host/r36s_game_boot.cpp
+          grep -q 'RE4_R36S_DEMO_RELEASE' port/android-decomp/app/src/main/cpp/gx_gl.cpp
+          grep -q 'GL_NEAREST' port/android-decomp/app/src/main/cpp/gx_gl.cpp
+          grep -q 'RE4_R36S_LOW_MEM=1' port/r36s/launch-demo-640x480.sh
+          if grep -E 'RE4_R36S_RENDER_SCALE=(0\.|[[:space:]]*0)' port/r36s/launch-demo-640x480.sh; then exit 1; fi
+      - name: Build and software EGL smoke test (not the R36S)
+        run: |
+          cmake -S port/r36s -B /tmp/re4-smoke -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build /tmp/re4-smoke --parallel 2
+          xvfb-run -a env LIBGL_ALWAYS_SOFTWARE=1 RE4_R36S_LOW_MEM=1 /tmp/re4-smoke/re4_r36s --probe --windowed
+
+  frontend-arm64:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Cortex-A35 native frontend build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y cmake ninja-build pkg-config libsdl2-dev libgles-dev libegl-dev
+      - name: Build and strip release frontend with no debug symbols
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S port/r36s/gx-host -B /tmp/re4-demo -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build /tmp/re4-demo --target r36s_re4_demo_640x480 --parallel 2
+          readelf -h /tmp/re4-demo/r36s_re4_demo_640x480 | grep -E 'Machine:.*AArch64'
+          strip --strip-debug /tmp/re4-demo/r36s_re4_demo_640x480
+          if readelf -S /tmp/re4-demo/r36s_re4_demo_640x480 | grep -E '\.debug_(info|line|str)'; then
+            echo "Release demo must not contain DWARF debug sections" >&2
+            exit 1
+          fi
+          mkdir -p artifact
+          cp /tmp/re4-demo/r36s_re4_demo_640x480 artifact/
+      - name: Check gamepad exit and debug-config patch policy
+        run: |
+          set -euo pipefail
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror -I port/r36s/gx-host \
+            port/r36s/gx-host/test_showcase_evdev_exit.cpp -o /tmp/re4-exit-test
+          /tmp/re4-exit-test
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror -I port/r36s/gx-host \
+            port/r36s/gx-host/test_showcase_clean_data.cpp -o /tmp/re4-clean-test
+          /tmp/re4-clean-test
+      - uses: actions/upload-artifact@v4
+        with:
+          name: re4-r36s-demo-640x480-frontend
+          path: artifact/r36s_re4_demo_640x480
+          if-no-files-found: error
+          retention-days: 14
+
+  matching-core-arm64:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      RE4_JOBS: "2"
+      RE4_OPT: "2"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux whole-program AArch64 cross toolchain
+        run: sudo bash port/tools/whole_setup_linux.sh
+      - name: Compile matching AArch64 core for local user-owned game-data tests
+        shell: bash
+        run: |
+          set -o pipefail
+          bash port/tools/whole_build.sh aarch64 2>&1 | tee /tmp/re4-build-output.log
+      - name: Check ARM64 architecture and required native core modules
+        shell: bash
+        run: |
+          set -euo pipefail
+          SRC=port/build/whole-aarch64-O2
+          mkdir -p artifact/core/modules
+          for name in re4_coreproc libre4_main.so libre4_platform.so libre4_host.so; do
+            test -s "$SRC/$name"
+            cp "$SRC/$name" artifact/core/
+          done
+          find "$SRC/modules" -maxdepth 1 -name 'libre4_*.so' -type f -exec cp {} artifact/core/modules/ \;
+          test "$(find artifact/core/modules -type f -name 'libre4_*.so' | wc -l)" -ge 114
+          readelf -h artifact/core/re4_coreproc | grep -E 'Machine:.*AArch64'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: re4-r36s-demo-matching-core-arm64
+          path: artifact/core/
+          if-no-files-found: error
+          retention-days: 14
+
+  assemble:
+    needs: [host-smoke, frontend-arm64, matching-core-arm64]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: re4-r36s-demo-640x480-frontend
+          path: /tmp/re4-frontend
+      - uses: actions/download-artifact@v4
+        with:
+          name: re4-r36s-demo-matching-core-arm64
+          path: /tmp/re4-core
+      - name: Assemble local-use complete technical demonstration ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR=ResidentEvil4-R36S-Demo-640x480
+          mkdir -p "dist/$DIR/modules" "dist/$DIR/data"
+          cp /tmp/re4-frontend/r36s_re4_demo_640x480 "dist/$DIR/"
+          cp /tmp/re4-core/{re4_coreproc,libre4_main.so,libre4_platform.so,libre4_host.so} "dist/$DIR/"
+          cp /tmp/re4-core/modules/libre4_*.so "dist/$DIR/modules/"
+          cp port/r36s/launch-demo-640x480.sh "dist/$DIR/"
+          cp port/docs/resident-evil-4-r36s-demo-640x480.md "dist/$DIR/LEIA-ME.md"
+          echo "Copie apenas seus proprios dados originais GameCube G4BE08 para data/disc0/." > "dist/$DIR/data/LEIA-ME.txt"
+          chmod +x "dist/$DIR/r36s_re4_demo_640x480" "dist/$DIR/re4_coreproc" "dist/$DIR/launch-demo-640x480.sh"
+          cat > dist/Resident-Evil-4-R36S-DEMO-640x480.sh <<'SH'
+          #!/bin/sh
+          HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+          exec sh "$HERE/ResidentEvil4-R36S-Demo-640x480/launch-demo-640x480.sh" "$@"
+          SH
+          chmod +x dist/Resident-Evil-4-R36S-DEMO-640x480.sh
+          test ! -d "dist/$DIR/data/disc0"
+          test -s "dist/$DIR/r36s_re4_demo_640x480"
+          test -s "dist/$DIR/re4_coreproc"
+          (cd dist && zip -qr ../Resident-Evil-4-R36S-DEMO-640x480-ARM64-TEST.zip .)
+      - name: Assemble public frontend-only prerelease (no recompiled game modules)
+        shell: bash
+        run: |
+          set -euo pipefail
+          DIR=ResidentEvil4-R36S-Demo-640x480
+          mkdir -p "public/$DIR"
+          cp "/tmp/re4-frontend/r36s_re4_demo_640x480" "public/$DIR/"
+          cp port/r36s/launch-demo-640x480.sh "public/$DIR/"
+          cp port/docs/resident-evil-4-r36s-demo-640x480.md "public/$DIR/LEIA-ME.md"
+          cp dist/Resident-Evil-4-R36S-DEMO-640x480.sh public/
+          echo "Frontend only: compile your own compatible AArch64 game core and supply your own game data." > "public/$DIR/MODULOS-NAO-INCLUIDOS.txt"
+          chmod +x "public/$DIR/r36s_re4_demo_640x480" "public/$DIR/launch-demo-640x480.sh" public/Resident-Evil-4-R36S-DEMO-640x480.sh
+          (cd public && zip -qr ../Resident-Evil-4-R36S-DEMO-640x480-FRONTEND-ONLY.zip .)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Resident-Evil-4-R36S-DEMO-640x480-ARM64-TEST
+          path: Resident-Evil-4-R36S-DEMO-640x480-ARM64-TEST.zip
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Resident-Evil-4-R36S-DEMO-640x480-FRONTEND-ONLY
+          path: Resident-Evil-4-R36S-DEMO-640x480-FRONTEND-ONLY.zip
+          if-no-files-found: error
+          retention-days: 14
+
+  publish-prerelease:
+    needs: assemble
+    if: github.event_name == 'push' && github.ref == 'refs/heads/experiment/r36s-re4-demo-640x480-sharp'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: Resident-Evil-4-R36S-DEMO-640x480-FRONTEND-ONLY
+          path: release
+      - name: Publish clearly marked experimental frontend-only prerelease
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG=r36s-re4-demo-640x480-v0.1.0
+          ASSET=release/Resident-Evil-4-R36S-DEMO-640x480-FRONTEND-ONLY.zip
+          test -s "$ASSET"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$ASSET" --clobber
+          else
+            gh release create "$TAG" "$ASSET" --target "$GITHUB_SHA" \
+              --title "Resident Evil 4 — R36S Demo 640×480 (unofficial experimental)" \
+              --notes "Unofficial technical prerelease. Sharp 640×480 SDL2/GLES3 frontend only; NO proprietary assets, extracted game files or reconstructed core modules. Gameplay/performance not yet validated on physical R36S. Build matching game core from authorized source and use only your own original game files." \
+              --prerelease
+          fi
