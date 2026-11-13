@@ -49,3 +49,24 @@ A "demo" here refers to an **unofficial technical demonstration**, not a shareab
 - Para disparar o CI caso commits do GitHub App não o iniciem: com a branch experimental selecionada, edite este documento na interface web do GitHub (adicione uma linha em branco ou comentário) e **Commit changes** diretamente nessa branch. O evento `push` gerado pela conta do proprietário deverá tentar iniciar `.github/workflows/r36s-demo-640x480.yml`. Alternativamente, dê push de commit vazio via git local (o workflow não usa filtro de paths).
 - O pipeline inclui smoke-test EGL no host, teste ARM64 do frontend, compilação do core recompilado, ZIP para testes locais e GitHub prerelease **frontend-only** após sucesso integral. Erros exigem corrigir a etapa específica; não mesclar PR #29/#32 antes disso.
 - Na próxima conversa: inspecionar os runs mais novos de `dehalbuq/CubeEvil4-Android`, a PR #32, o workflow acima e seu artifact `Resident-Evil-4-R36S-DEMO-640x480-ARM64-TEST`; se compilou, testar no R36S com dArkOSRE usando arquivos originais compatíveis G4BE08 e reportar FPS/áudio/saída.
+
+## Início manual da compilação (GitHub Actions)
+
+O arquivo `.github/workflows/build-re4-r36s-demo-manual.yml` foi criado em
+`master` como **acionador de build, não como mesclagem do jogo**. Ele chama
+o workflow reutilizável na branch
+`experiment/r36s-re4-demo-640x480-sharp`, cujo checkout está fixado
+na mesma branch. Dessa forma o código R36S permanece separado da master.
+
+1. Abra `https://github.com/dehalbuq/CubeEvil4-Android/actions/workflows/build-re4-r36s-demo-manual.yml`.
+2. Clique **Run workflow**, escolha `master` e confirme.
+3. Acompanhe `host-smoke`, `frontend-arm64`, `matching-core-arm64`, `assemble` e `publish-prerelease`.
+4. Se todos passarem, abra o artefato `Resident-Evil-4-R36S-DEMO-640x480-ARM64-TEST`.
+5. A prévia pública, caso criada, contém só o **frontend** sem módulos de jogo.
+
+Nenhuma execução manual foi disparada pelas ferramentas da sessão em
+13/11/2026: elas não fornecem `workflow_dispatch`. A presença
+do workflow no GitHub não significa que a compilação passou.
+
+**Estado seguinte:** verificar run manual, diagnosticar job falhado com logs
+e só então marcar o pacote como compilado; no R36S realizar teste físico.
