@@ -1,0 +1,15 @@
+name: Build Resident Evil 4 R36S 640x480 Demo (manual)
+
+# This file lives on the default branch so the Actions UI exposes Run workflow.
+# It builds the separate experimental branch; it does NOT merge game source to master.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-experimental-r36s-demo:
+    uses: dehalbuq/CubeEvil4-Android/.github/workflows/r36s-demo-640x480.yml@experiment/r36s-re4-demo-640x480-sharp
+    permissions:
+      contents: write
