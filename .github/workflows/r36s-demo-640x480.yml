@@ -5,13 +5,6 @@ on:
   push:
     branches:
       - experiment/r36s-re4-demo-640x480-sharp
-    paths:
-      - ".github/workflows/r36s-demo-640x480.yml"
-      - "port/r36s/**"
-      - "port/docs/resident-evil-4-r36s-demo-640x480.md"
-      - "port/whole/**"
-      - "port/android-decomp/app/src/main/cpp/gx_*.cpp"
-      - "port/android-decomp/app/src/main/cpp/gx_*.h"
 
 permissions:
   contents: read
