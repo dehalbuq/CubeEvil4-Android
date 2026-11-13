@@ -107,6 +107,16 @@ jobs:
           find "$SRC/modules" -maxdepth 1 -name 'libre4_*.so' -type f -exec cp {} artifact/core/modules/ \;
           test "$(find artifact/core/modules -type f -name 'libre4_*.so' | wc -l)" -ge 114
           readelf -h artifact/core/re4_coreproc | grep -E 'Machine:.*AArch64'
+          # No DWARF/debug symbols in the personal-use demo test package.
+          # Retain dynamic symbols required by the ELF module loader.
+          command -v aarch64-linux-gnu-strip
+          for elf in artifact/core/re4_coreproc artifact/core/*.so artifact/core/modules/*.so; do
+            aarch64-linux-gnu-strip --strip-debug "$elf"
+          done
+          if readelf -S artifact/core/re4_coreproc | grep -E '\\.debug_(info|line|str)'; then
+            echo "Core contains debug sections" >&2
+            exit 1
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: re4-r36s-demo-matching-core-arm64
