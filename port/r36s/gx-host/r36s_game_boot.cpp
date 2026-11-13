@@ -337,7 +337,7 @@ int main(int argc,char**argv) {
   // Release demo must never expose the game's original diagnostic PRINT_PAGE.
   // Fail safely if the non-mutating private config overlay cannot be created.
   if(!debugOverlayReady) {
-    fprintf(stderr,"Resident Evil 4 demo: cannot disable original game debug display: %s\\n",
+    fprintf(stderr,"Resident Evil 4 demo: cannot disable original game debug display: %s\n",
             cleanGameData.error.c_str());
     return 22;
   }
